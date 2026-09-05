@@ -500,19 +500,6 @@ async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
   return Boolean(output.trim());
 }
 
-async function reusableWorkspace(cwd, projectPrefix, integrationBranch) {
-  for (const workspace of await listWorkspaces(cwd)) {
-    if (workspace.name === "default" || !workspace.name.startsWith(`${projectPrefix}-`)) continue;
-    if (!workspace.root || workspace.lock || workspace.metadata?.issueNumber) continue;
-    const relativePath = workspace.root.startsWith(`${WORKSPACE_HOME}/`);
-    if (!relativePath) continue;
-    if (await workspaceHasUnintegratedWork(workspace.root, integrationBranch)) continue;
-    await jj(workspace.root, ["rebase", "-r", "@", "--onto", integrationBranch]);
-    return await workspaceContext(workspace.root);
-  }
-  return null;
-}
-
 async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
   if (!issueNumber) return;
   for (const workspace of await listWorkspaces(cwd)) {
@@ -595,26 +582,6 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
     return { ...context, created: false, workspacePath: context.current.root };
   }
   const project = slug(basename(context.integration.root), 24);
-  if (!options.issueNumber) {
-    const reusable = await reusableWorkspace(cwd, project, context.integrationBranch);
-    if (reusable) {
-      const reusedName = options.issueNumber
-        ? `${project}-i${options.issueNumber}`
-        : taskWorkspaceName(project);
-      if (reusable.current.name !== reusedName)
-        await renameWorkspace(reusable.current.root, reusedName);
-      const reusedContext = await workspaceContext(reusable.current.root);
-      if (!reusedContext) throw new Error("Reused JJ workspace disappeared during rename");
-      await writeWorkspaceTaskMetadata(reusedContext, task);
-      await prepareWorkspaceDependencies(reusable.current.root);
-      return {
-        ...reusedContext,
-        created: false,
-        reused: true,
-        workspacePath: reusable.current.root,
-      };
-    }
-  }
   const name = taskWorkspaceName(project, options.issueNumber);
   await assertIssueAvailable(cwd, options.issueNumber, name);
   const workspacePath = join(WORKSPACE_HOME, name);
