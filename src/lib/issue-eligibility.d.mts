@@ -1,0 +1,1 @@
+export function assertIssueEligible(root: string, issueNumber: number | undefined, integrationBranch: string, run: (executable: string, args: string[], cwd: string) => Promise<string>): Promise<void>;

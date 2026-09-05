@@ -1,3 +1,5 @@
+import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
+import { assertIssueEligible } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { access, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
@@ -84,6 +86,11 @@ export async function activeWorkspaceLock(workspaceName) {
 }
 
 export async function acquireWorkspaceLock(context, options = {}) {
+  if (!context || context.current.name === "default") return async () => {};
+  return withWorkspaceTransaction(`writer:${context.current.name}`, () => acquireWorkspaceLockUnlocked(context, options));
+}
+
+async function acquireWorkspaceLockUnlocked(context, options) {
   if (!context || context.current.name === "default") return async () => {};
   await mkdir(LOCK_HOME, { recursive: true, mode: 0o700 });
   const path = lockPath(context.current.name);
@@ -576,6 +583,23 @@ export async function prepareWorkspaceDependencies(workspacePath) {
 export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
+  return withWorkspaceTransaction(`allocate:${context.integration.root}:${options.issueNumber ?? "direct"}`, async () => {
+    await assertIssueEligible(context.integration.root, options.issueNumber, context.integrationBranch, async (executable, args, root) => {
+      const result = await run(executable, args, { cwd: root });
+      if (result.code !== 0) throw new Error(result.stderr || "Issue eligibility unavailable");
+      return result.stdout;
+    });
+    if (options.issueNumber) {
+      const existing = await findIssueWorkspace(cwd, options.issueNumber);
+      if (existing?.root) return { ...(await workspaceContext(existing.root)), created: false, reused: true, workspacePath: existing.root };
+    }
+    return createWorkspaceUnlocked(task, cwd, options);
+  });
+}
+
+async function createWorkspaceUnlocked(task, cwd, options) {
+  const context = await workspaceContext(cwd);
+  if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
   if (context.current.name !== "default") {
     await writeWorkspaceTaskMetadata(context, task);
     if (options.issueNumber) await attachWorkspaceIssue(context.current.root, options.issueNumber);
@@ -735,13 +759,17 @@ export async function landWorkspace(cwd = process.cwd()) {
     inherit: true,
   });
   await assertStackConflictFree(cwd, context.integrationBranch, target.changeId);
+  const base = await revisionFacts(cwd, context.integrationBranch);
+  const candidate = await revisionFacts(cwd, target.changeId);
   await runVerification(context);
-  await assertDefaultReady(context);
-
-  await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", target.changeId], {
-    inherit: true,
+  await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
+    if ((await revisionFacts(cwd, target.changeId)).commitId !== candidate.commitId || (await revisionFacts(cwd, context.integrationBranch)).commitId !== base.commitId)
+      throw new Error("Candidate or integration changed during verification; retry landing");
+    await assertDefaultReady(context);
+    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", target.changeId], { inherit: true });
+    await writeLandingState(context, candidate);
+    await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
   });
-  await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
 
   const currentAfter = await revisionFacts(cwd, "@");
   if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch], { inherit: true });
