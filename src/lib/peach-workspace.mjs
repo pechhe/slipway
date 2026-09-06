@@ -1,4 +1,5 @@
 import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
+import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertIssueEligible } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -54,16 +55,6 @@ export async function writeWorkspaceMode(mode) {
   return mode;
 }
 
-function processAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-
 function lockPath(workspaceName) {
   return join(LOCK_HOME, `${workspaceName}.json`);
 }
@@ -80,7 +71,7 @@ export async function activeWorkspaceLock(workspaceName) {
   const path = lockPath(workspaceName);
   const lock = await readJsonOptional(path);
   if (!lock) return null;
-  if (processAlive(lock.pid)) return lock;
+  if (workspaceWriterRecordMustBePreserved(lock)) return lock;
   await rm(path, { force: true });
   return null;
 }
@@ -114,7 +105,7 @@ async function acquireWorkspaceLockUnlocked(context, options) {
         await new Promise((resolveWait) => setTimeout(resolveWait, 50));
       }
       const owner = await readJsonOptional(path);
-      if (owner?.pid === active.pid && processAlive(active.pid)) {
+      if (owner?.pid === active.pid && workspaceWriterProcessAlive(active.pid)) {
         process.kill(active.pid, "SIGKILL");
       }
       await rm(path, { force: true });
