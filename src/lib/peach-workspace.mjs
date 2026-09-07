@@ -228,15 +228,28 @@ export async function workspaceContext(cwd = process.cwd()) {
   return { current, integration, integrationBranch, configuration };
 }
 
+export function normalizeDeclaredVerification(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    if (typeof entry.executable !== "string" || !entry.executable.trim()) return [];
+    if (!Array.isArray(entry.args) || entry.args.some((arg) => typeof arg !== "string")) return [];
+    if (entry.cwd != null && typeof entry.cwd !== "string") return [];
+    return [{
+      executable: entry.executable,
+      args: [...entry.args],
+      ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
+    }];
+  });
+}
+
 async function readConfiguration(root) {
   try {
     const parsed = JSON.parse(await readFile(join(root, ".peach", "execution.json"), "utf8"));
     return {
       integrationBranch:
         typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined,
-      requiredLocalVerification: Array.isArray(parsed.requiredLocalVerification)
-        ? parsed.requiredLocalVerification
-        : [],
+      requiredLocalVerification: normalizeDeclaredVerification(parsed.requiredLocalVerification),
     };
   } catch {
     return { requiredLocalVerification: [] };
