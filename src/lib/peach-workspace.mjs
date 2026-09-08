@@ -1,7 +1,8 @@
-import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
+import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertIssueEligible } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
+import { evaluateIndependentReview, recordIndependentReviewRequest, completeIndependentReview } from "./independent-review-policy.mjs";
 import { spawn } from "node:child_process";
 import { access, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -244,16 +245,15 @@ export function normalizeDeclaredVerification(value) {
 }
 
 async function readConfiguration(root) {
-  try {
-    const parsed = JSON.parse(await readFile(join(root, ".peach", "execution.json"), "utf8"));
-    return {
-      integrationBranch:
-        typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined,
-      requiredLocalVerification: normalizeDeclaredVerification(parsed.requiredLocalVerification),
-    };
-  } catch {
-    return { requiredLocalVerification: [] };
-  }
+  let raw;
+  try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
+  const parsed = JSON.parse(raw);
+  const checks = parsed?.requiredLocalVerification ?? [];
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
+  const requiredLocalVerification = normalizeDeclaredVerification(checks);
+  if (requiredLocalVerification.length !== checks.length) throw new Error("Malformed requiredLocalVerification entry");
+  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification };
 }
 
 async function revisionExists(cwd, revision) {
@@ -666,24 +666,15 @@ function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
-async function writeLandingState(context, artifact) {
+async function writeLandingState(context, artifact, review, verification, phase = "landed") {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
-  await writeFile(
-    statePath(context.current.name),
-    JSON.stringify(
-      {
-        version: 1,
-        workspaceName: context.current.name,
-        workspacePath: context.current.root,
-        integrationRoot: context.integration.root,
-        integrationBranch: context.integrationBranch,
-        artifactCommitId: artifact.commitId,
-        landedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
+  await writeWorkspaceJson(statePath(context.current.name), {
+    version: 1, phase, workspaceName: context.current.name, workspacePath: context.current.root,
+    integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
+    artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
+    artifactDescription: artifact.description, review, verification: "passed",
+    verificationCommands: verification, landedAt: new Date().toISOString(),
+  });
 }
 
 export async function landingPreview(cwd = process.cwd()) {
@@ -722,6 +713,7 @@ async function assertStackConflictFree(cwd, branch, changeId) {
 }
 
 async function runVerification(context) {
+  const passed = [];
   for (const check of context.configuration.requiredLocalVerification) {
     if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)) {
       throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
@@ -733,7 +725,9 @@ async function runVerification(context) {
     const result = await run(check.executable, args, { cwd, inherit: true });
     if (result.code !== 0)
       throw new Error(`Required verification failed: ${check.executable} ${args.join(" ")}`);
+    passed.push(`${check.executable} ${args.join(" ")}`.trim());
   }
+  return passed;
 }
 
 async function ensureLandingDescription(cwd, context, target) {
@@ -753,33 +747,77 @@ async function ensureLandingDescription(cwd, context, target) {
   return revisionFacts(cwd, target.changeId);
 }
 
-export async function landWorkspace(cwd = process.cwd()) {
+export async function landWorkspace(cwd = process.cwd(), options = {}) {
+  const context = await workspaceContext(cwd);
+  if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
+  return withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
+    const lock = await activeWorkspaceLock(context.current.name);
+    if (lock && (lock.surface === "peach" || lock.ownerAgentRunId || lock.revoking || ![process.pid, process.ppid].includes(lock.pid))) {
+      throw new Error("Workspace has another live owner; use the owning surface or governed takeover before landing");
+    }
+    const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context, {});
+    try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
+  });
+}
+
+async function landOwnedWorkspace(cwd, options) {
   const preview = await landingPreview(cwd);
   const { context } = preview;
+  const prior = await readJsonOptional(statePath(context.current.name));
+  if (prior?.review && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
+    && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
+    if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
+    return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review };
+  }
   const target = await ensureLandingDescription(cwd, context, preview.target);
   await assertDefaultReady(context);
-
-  await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch], {
-    inherit: true,
-  });
+  await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch], { inherit: true });
   await assertStackConflictFree(cwd, context.integrationBranch, target.changeId);
   const base = await revisionFacts(cwd, context.integrationBranch);
   const candidate = await revisionFacts(cwd, target.changeId);
-  await runVerification(context);
+  const assertIdentity = async () => {
+    const drift = await jj(cwd, ["diff", "--from", candidate.commitId, "--to", "@", "--summary"]);
+    if ((await revisionFacts(cwd, target.changeId)).commitId !== candidate.commitId || drift)
+      throw new Error("Verification checkout differs from the landing candidate; repair and rerun landing");
+    if ((await revisionFacts(cwd, context.integrationBranch)).commitId !== base.commitId)
+      throw new Error("Integration bookmark moved; rerun landing against the new base");
+  };
+  await assertIdentity();
+  const summary = await jj(cwd, ["diff", "--from", base.commitId, "--to", candidate.commitId, "--summary"]);
+  const metadata = await workspaceMetadata(context.current.name);
+  const exact = {
+    workspaceName: context.current.name, workspacePath: context.current.root,
+    integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
+    integrationBaseCommitSha: base.commitId, changeId: candidate.changeId, commitSha: candidate.commitId,
+    changedPaths: summary.split(/\r?\n/).filter(Boolean).map((line) => line.replace(/^[A-Z?]\s+/, "")),
+    stat: await jj(cwd, ["diff", "--from", base.commitId, "--to", candidate.commitId, "--stat"]),
+    diff: await jj(cwd, ["diff", "--git", "--from", base.commitId, "--to", candidate.commitId]),
+    verification: [], ...(typeof metadata?.issueNumber === "number" ? { issueNumber: metadata.issueNumber } : {}),
+  };
+  const reviewOptions = { required: options.independentReview, waiver: options.independentReviewWaiver,
+    requesterIdentity: options.requesterIdentity, implementationSessionFile: options.implementationSessionFile,
+    runReview: options.runReview };
+  await recordIndependentReviewRequest(exact, reviewOptions);
+  exact.verification = await runVerification(context);
+  await assertIdentity();
+  const review = await evaluateIndependentReview(exact, reviewOptions);
+  if (!["not_requested", "pass", "waived"].includes(review.status)) {
+    const error = new Error(`Independent code review ${review.status}; landing remains blocked`);
+    error.outcome = review;
+    throw error;
+  }
   await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
-    if ((await revisionFacts(cwd, target.changeId)).commitId !== candidate.commitId || (await revisionFacts(cwd, context.integrationBranch)).commitId !== base.commitId)
-      throw new Error("Candidate or integration changed during verification; retry landing");
+    await assertIdentity();
     await assertDefaultReady(context);
-    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", target.changeId], { inherit: true });
-    await writeLandingState(context, candidate);
+    await writeLandingState(context, candidate, review, exact.verification, "prepared");
+    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId], { inherit: true });
+    await writeLandingState(context, candidate, review, exact.verification);
+    await completeIndependentReview(exact, reviewOptions);
     await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
   });
-
   const currentAfter = await revisionFacts(cwd, "@");
   if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch], { inherit: true });
-  const artifact = await revisionFacts(cwd, target.changeId);
-  await writeLandingState(context, artifact);
-  return { context, artifact };
+  return { context, artifact: candidate, review };
 }
 
 export async function cleanupLandedWorkspace(cwd = process.cwd()) {

@@ -54,9 +54,15 @@ export function removeWorkspace(
   workspaceName: string,
   options?: { allowWork?: boolean; allowIssue?: boolean },
 ): Promise<void>;
-export function landWorkspace(
-  cwd?: string,
-): Promise<{ artifact: { commitId: string }; context: WorkspaceContext }>;
+export function landWorkspace(cwd?: string, options?: {
+  independentReview?: boolean;
+  independentReviewWaiver?: import("../independent-review.ts").IndependentReviewWaiver;
+  requesterIdentity?: string; implementationSessionFile?: string;
+  runReview?: import("./independent-review-policy.mjs").ReviewPolicyOptions["runReview"];
+}): Promise<{
+  artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
+  review: import("../independent-review.ts").IndependentReviewOutcome;
+}>;
 export function landingPreview(cwd?: string): Promise<{
   context: WorkspaceContext;
   targetRevision: string;
@@ -68,3 +74,5 @@ export function acquireWorkspaceLock(
   context: WorkspaceContext,
   options?: { takeOver?: boolean },
 ): Promise<() => Promise<void>>;
+
+export function normalizeDeclaredVerification(value: unknown): Array<{ executable: string; args: string[]; cwd?: string }>;
