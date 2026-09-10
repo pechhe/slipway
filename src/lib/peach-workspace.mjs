@@ -215,10 +215,11 @@ export async function workspaceContext(cwd = process.cwd()) {
     'name ++ "\\t" ++ root ++ "\\t" ++ target.change_id() ++ "\\t" ++ target.commit_id() ++ "\\n"',
   ]);
   const workspaces = parseWorkspaceList(output);
-  const current = workspaces.find((entry) => resolve(entry.root) === resolve(currentRoot));
+  // resolve("") means this process cwd, not an unavailable JJ checkout.
+  const current = workspaces.find((entry) => entry.root && resolve(entry.root) === resolve(currentRoot));
   if (!current) throw new Error("Current jj workspace is not registered");
   const integration = workspaces.find((entry) => entry.name === "default");
-  if (!integration) throw new Error("The canonical jj workspace named 'default' is missing");
+  if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
   const configuration = await readConfiguration(integration.root);
   const integrationBranch = configuration.integrationBranch ?? (await inferIntegrationBranch(cwd));
   if (!(await revisionExists(cwd, integrationBranch))) {
@@ -358,7 +359,7 @@ export async function inspectWorkspace(cwd = process.cwd()) {
   if (!context) return null;
   const workspaces = await inspectWorkspaces(cwd);
   return (
-    workspaces.find((workspace) => resolve(workspace.root) === resolve(context.current.root)) ??
+    workspaces.find((workspace) => workspace.root && resolve(workspace.root) === resolve(context.current.root)) ??
     null
   );
 }
