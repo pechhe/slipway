@@ -29,3 +29,67 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
     if (!integrated) throw new Error(`Issue #${dependency.number} is closed but its exact accepted change is not proven landed in ${integrationBranch}; Issue #${issueNumber} remains blocked`);
   }
 }
+
+/** Resolve an authorized Issue/Epic against live GitHub state on every boundary.
+ * Route hints never bypass readiness, dependencies or current native ownership. */
+export async function selectImplementationIssue(root, scopeNumber, branch, run) {
+  if (!scopeNumber) return undefined;
+  const remote = await run("jj", ["git", "remote", "list"], root);
+  const repository = remote.match(/(?:github\.com[:/])([^\s]+?)(?:\.git)?(?:\s|$)/)?.[1];
+  if (!repository) return scopeNumber;
+  const api = async (suffix) => JSON.parse(await run("gh", ["api", `repos/${repository}/${suffix}`, "--paginate", "--slurp"], root)).flat();
+  const [scope] = await api(`issues/${scopeNumber}`);
+  if (!scope || scope.state !== "open") throw new Error(`Work #${scopeNumber} is no longer open`);
+  const children = await api(`issues/${scopeNumber}/sub_issues?per_page=100`);
+  const labels = (issue) => (issue.labels ?? []).map((label) => typeof label === "string" ? label : label.name);
+  if (labels(scope).includes("programme") || labels(scope).includes("super-epic")) throw new Error("Select an Epic or Issue, not a Programme");
+  if (children.length && !labels(scope).includes("epic")) throw new Error("Only an Epic may have child delivery units");
+  const candidates = (children.length ? children : [scope]).filter((issue) => issue.state === "open").sort((a, b) => a.number - b.number);
+  const reasons = [];
+  for (const candidate of candidates) {
+    // Refresh each candidate: sub-issue listings and route advice are not readiness authority.
+    const [issue] = await api(`issues/${candidate.number}`);
+    const current = labels(issue ?? {});
+    if (!issue || issue.state !== "open" || !current.includes("ready-for-agent")
+      || current.some((label) => ["discovery", "someday", "programme", "super-epic"].includes(label))) {
+      reasons.push(`#${candidate.number} is not ready`); continue;
+    }
+    if (current.includes("epic") && (await api(`issues/${issue.number}/sub_issues?per_page=100`)).length) {
+      reasons.push(`#${issue.number} contains child delivery units`); continue;
+    }
+    try { await assertIssueEligible(root, issue.number, branch, run); }
+    catch (error) { reasons.push(String(error)); continue; }
+    return issue.number;
+  }
+  throw new Error(candidates.length ? `No eligible child remains: ${reasons.join("; ")}` : `Scope #${scopeNumber} has no unfinished children`);
+}
+
+/** A decomposed Epic keeps its lifecycle open when reconciling parent source. */
+export async function issueHasChildDeliveryUnits(root, issueNumber, run) {
+  if (!issueNumber) return false;
+  const remote = await run("jj", ["git", "remote", "list"], root);
+  const repository = remote.match(/(?:github\.com[:/])([^\s]+?)(?:\.git)?(?:\s|$)/)?.[1];
+  if (!repository) return false;
+  const children = JSON.parse(await run("gh", ["api", `repos/${repository}/issues/${issueNumber}/sub_issues?per_page=100`, "--paginate", "--slurp"], root)).flat();
+  return children.length > 0;
+}
+
+/** Moving on requires completion bookkeeping for the exact accepted delivery unit. */
+export async function assertIssueReconciled(root, issueNumber, commit, run) {
+  if (!issueNumber) return;
+  const remote = await run("jj", ["git", "remote", "list"], root);
+  const repository = remote.match(/(?:github\.com[:/])([^\s]+?)(?:\.git)?(?:\s|$)/)?.[1];
+  if (!repository) return;
+  const api = async (suffix) => JSON.parse(await run("gh", ["api", `repos/${repository}/issues/${issueNumber}${suffix}`, "--paginate", "--slurp"], root)).flat();
+  const [issue] = await api("");
+  const comments = await api("/comments?per_page=100");
+  const decomposed = (issue?.labels ?? []).some((label) => (typeof label === "string" ? label : label.name) === "epic")
+    && await issueHasChildDeliveryUnits(root, issueNumber, run);
+  if ((!decomposed && issue?.state !== "closed") || !comments.some((comment) =>
+    comment.body?.startsWith(decomposed ? "Epic source reconciled via Peach local integration." : "Completed via Peach local integration.")
+    && comment.body.includes(`<!-- peach-local-completion:${issueNumber}:`)
+    && comment.body.includes("Verification: passed")
+    && comment.body.includes("Integrated commit: `" + commit + "`"))) {
+    throw new Error(`Reconcile completion of Issue #${issueNumber} before continuing`);
+  }
+}

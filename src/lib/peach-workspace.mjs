@@ -1,6 +1,8 @@
+import { cleanupEligibleAt, cleanupRetentionReason, assertWorkspaceNotRetired } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
-import { assertIssueEligible } from "./issue-eligibility.mjs";
+import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
+import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
 import { evaluateIndependentReview, recordIndependentReviewRequest, completeIndependentReview } from "./independent-review-policy.mjs";
 import { spawn } from "node:child_process";
@@ -85,6 +87,8 @@ export async function acquireWorkspaceLock(context, options = {}) {
 
 async function acquireWorkspaceLockUnlocked(context, options) {
   if (!context || context.current.name === "default") return async () => {};
+  await assertWorkspaceNotRetired(context.current.name);
+  await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
   await mkdir(LOCK_HOME, { recursive: true, mode: 0o700 });
   const path = lockPath(context.current.name);
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -302,6 +306,8 @@ async function writeWorkspaceTaskMetadata(context, task) {
         workspaceName: context.current.name,
         workspacePath: context.current.root,
         integrationRoot: context.integration.root,
+        implementationChangeId: existing?.implementationChangeId ?? context.current.changeId,
+        workspaceCreationOperationId: existing?.workspaceCreationOperationId ?? await jj(context.current.root, ["op", "log", "--no-graph", "-n", "1", "-T", "id"]),
         task: normalized,
         updatedAt: new Date().toISOString(),
       },
@@ -521,13 +527,29 @@ async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
   }
 }
 
+async function runIssueBoundary(executable, args, cwd) {
+  const result = await run(executable, args, { cwd });
+  if (result.code !== 0) throw new Error(result.stderr || "Issue hierarchy unavailable");
+  return result.stdout;
+}
+
 export async function attachWorkspaceIssue(cwd, issueNumber) {
+  const context = await workspaceContext(cwd);
+  if (!context) throw new Error("Issue attachment requires a native workspace");
+  return withWorkspaceTransaction(`association:${context.integration.root}`, () => attachWorkspaceIssueUnlocked(cwd, issueNumber));
+}
+
+async function attachWorkspaceIssueUnlocked(cwd, issueNumber) {
   if (!Number.isInteger(issueNumber) || issueNumber <= 0)
     throw new Error("Issue number must be a positive integer");
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default")
     throw new Error("Attach Issues only to isolated JJ workspaces");
+  await assertWorkspaceNotRetired(context.current.name);
   await assertIssueAvailable(cwd, issueNumber, context.current.name);
+  const prior = await workspaceMetadata(context.current.name);
+  if (prior?.issueNumber && prior.issueNumber !== issueNumber) throw new Error("This workspace already belongs to another Issue; preserve its identity");
+  await assertIssueWorkspaceBoundary(context.integration.root, issueNumber, context.current.name, runIssueBoundary, { existingBinding: prior?.issueNumber === issueNumber });
   await mkdir(METADATA_HOME, { recursive: true, mode: 0o700 });
   const metadata = {
     ...(await workspaceMetadata(context.current.name)),
@@ -593,6 +615,7 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
     });
     if (options.issueNumber) {
       const existing = await findIssueWorkspace(cwd, options.issueNumber);
+      await assertIssueWorkspaceBoundary(context.integration.root, options.issueNumber, existing?.name ?? context.current.name, runIssueBoundary, { existingBinding: Boolean(existing) });
       if (existing?.root) return { ...(await workspaceContext(existing.root)), created: false, reused: true, workspacePath: existing.root };
     }
     return createWorkspaceUnlocked(task, cwd, options);
@@ -603,6 +626,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
   if (context.current.name !== "default") {
+    await assertWorkspaceNotRetired(context.current.name);
     await writeWorkspaceTaskMetadata(context, task);
     if (options.issueNumber) await attachWorkspaceIssue(context.current.root, options.issueNumber);
     return { ...context, created: false, workspacePath: context.current.root };
@@ -672,6 +696,10 @@ async function writeLandingState(context, artifact, review, verification, phase 
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
     artifactDescription: artifact.description, review, verification: verification.status,
     verificationCommands: verification.passed, verificationEvidence: verification, landedAt: new Date().toISOString(),
+    workspaceImplementationChangeId: (await workspaceMetadata(context.current.name))?.implementationChangeId,
+    cleanupEligibleAt: cleanupEligibleAt(new Date().toISOString()),
+    ...(typeof (await workspaceMetadata(context.current.name))?.issueNumber === "number"
+      ? { issueNumber: (await workspaceMetadata(context.current.name)).issueNumber } : {}),
   });
 }
 
@@ -763,6 +791,13 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
   return withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
+    const prior = await readJsonOptional(statePath(context.current.name));
+    if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
+      && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
+      if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
+      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review };
+    }
+    await assertWorkspaceNotRetired(context.current.name);
     const lock = await activeWorkspaceLock(context.current.name);
     if (lock && (lock.surface === "peach" || lock.ownerAgentRunId || lock.revoking || ![process.pid, process.ppid].includes(lock.pid))) {
       throw new Error("Workspace has another live owner; use the owning surface or governed takeover before landing");
@@ -776,7 +811,7 @@ async function landOwnedWorkspace(cwd, options) {
   const preview = await landingPreview(cwd);
   const { context } = preview;
   const prior = await readJsonOptional(statePath(context.current.name));
-  if (prior?.review && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
+  if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
     && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
     if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
     return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review,
@@ -836,6 +871,12 @@ async function landOwnedWorkspace(cwd, options) {
 
 export async function cleanupLandedWorkspace(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
+  if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
+  return withWorkspaceTransaction(`writer:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd));
+}
+
+async function cleanupLandedWorkspaceUnlocked(cwd) {
+  const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default")
     return { cleaned: false, reason: "not-isolated" };
   let state;
@@ -853,6 +894,9 @@ export async function cleanupLandedWorkspace(cwd = process.cwd()) {
   if (await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch)) {
     return { cleaned: false, reason: "new-unlanded-work" };
   }
+  const retention = cleanupRetentionReason(state, context, await workspaceMetadata(context.current.name));
+  if (retention) return { cleaned: false, reason: retention };
+  if (await activeWorkspaceLock(context.current.name)) return { cleaned: false, reason: "writer-owned" };
   const integrated = await revisionExists(
     context.integration.root,
     `${state.artifactCommitId} & ::${state.integrationBranch}`,
@@ -865,4 +909,40 @@ export async function cleanupLandedWorkspace(cwd = process.cwd()) {
   await rm(metadataPath(context.current.name), { force: true });
   await rm(lockPath(context.current.name), { force: true });
   return { cleaned: true };
+}
+
+/** Exact source proof required before one session may leave its current Issue. */
+export async function assertWorkspaceDelivered(cwd) {
+  const context = await workspaceContext(cwd);
+  if (!context || context.current.name === "default") throw new Error("No current Issue workspace");
+  const state = await readJsonOptional(statePath(context.current.name));
+  const metadata = await workspaceMetadata(context.current.name);
+  if (!state || state.phase !== "landed" || state.workspaceName !== context.current.name
+    || state.workspacePath !== context.current.root || state.integrationRoot !== context.integration.root
+    || state.integrationBranch !== context.integrationBranch
+    || (state.issueNumber ?? null) !== (metadata?.issueNumber ?? null)
+    || !await revisionExists(cwd, `${state.artifactCommitId} & ::${context.integrationBranch}`)
+    || await workspaceHasUnintegratedWork(cwd, context.integrationBranch)) {
+    throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
+  }
+  await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
+    const result = await run(executable, args, { cwd: root });
+    if (result.code !== 0) throw new Error(result.stderr || "Completion bookkeeping unavailable");
+    return result.stdout;
+  });
+  return state;
+}
+
+export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
+  const context = await workspaceContext(cwd);
+  if (!context) throw new Error("Continuation requires a JJ project");
+  if (context.current.name !== "default") await assertWorkspaceDelivered(cwd);
+  const issueNumber = await selectImplementationIssue(context.integration.root, scopeNumber, context.integrationBranch, async (executable, args, root) => {
+    const result = await run(executable, args, { cwd: root });
+    if (result.code !== 0) throw new Error(result.stderr || "Live Issue eligibility unavailable");
+    return result.stdout;
+  });
+  const existing = issueNumber ? await findIssueWorkspace(cwd, issueNumber) : null;
+  if (existing?.lock) throw new Error(`Issue #${issueNumber} has a current writer in jj:${existing.name}`);
+  return createWorkspace(task, context.integration.root, { issueNumber });
 }
