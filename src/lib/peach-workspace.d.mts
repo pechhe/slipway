@@ -19,7 +19,7 @@ export interface WorkspaceContext {
   integrationBranch: string;
   configuration: {
     integrationBranch?: string;
-    requiredLocalVerification: Array<{ executable: string; args: unknown[]; cwd?: string }>;
+    requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
   };
 }
 export class CommandError extends Error {}
@@ -62,6 +62,7 @@ export function landWorkspace(cwd?: string, options?: {
 }): Promise<{
   artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
   review: import("../independent-review.ts").IndependentReviewOutcome;
+  verification: import("./verification-policy.mjs").VerificationEvidence;
 }>;
 export function landingPreview(cwd?: string): Promise<{
   context: WorkspaceContext;
@@ -75,4 +76,4 @@ export function acquireWorkspaceLock(
   options?: { takeOver?: boolean },
 ): Promise<() => Promise<void>>;
 
-export function normalizeDeclaredVerification(value: unknown): Array<{ executable: string; args: string[]; cwd?: string }>;
+export function normalizeDeclaredVerification(value: unknown): WorkspaceContext["configuration"]["requiredLocalVerification"];

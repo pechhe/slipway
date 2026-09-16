@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { access, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { classifyCapabilityProbe, normalizeVerificationDeclaration, verificationEvidence, verificationReviewEvidence } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -232,16 +233,12 @@ export async function workspaceContext(cwd = process.cwd()) {
 
 export function normalizeDeclaredVerification(value) {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    if (typeof entry.executable !== "string" || !entry.executable.trim()) return [];
-    if (!Array.isArray(entry.args) || entry.args.some((arg) => typeof arg !== "string")) return [];
-    if (entry.cwd != null && typeof entry.cwd !== "string") return [];
-    return [{
-      executable: entry.executable,
-      args: [...entry.args],
-      ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
-    }];
+  return value.flatMap((entry, index) => {
+    try {
+      return [normalizeVerificationDeclaration(entry, `requiredLocalVerification[${index}]`)];
+    } catch {
+      return [];
+    }
   });
 }
 
@@ -673,8 +670,8 @@ async function writeLandingState(context, artifact, review, verification, phase 
     version: 1, phase, workspaceName: context.current.name, workspacePath: context.current.root,
     integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
-    artifactDescription: artifact.description, review, verification: "passed",
-    verificationCommands: verification, landedAt: new Date().toISOString(),
+    artifactDescription: artifact.description, review, verification: verification.status,
+    verificationCommands: verification.passed, verificationEvidence: verification, landedAt: new Date().toISOString(),
   });
 }
 
@@ -715,6 +712,7 @@ async function assertStackConflictFree(cwd, branch, changeId) {
 
 async function runVerification(context) {
   const passed = [];
+  const gaps = [];
   for (const check of context.configuration.requiredLocalVerification) {
     if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)) {
       throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
@@ -722,13 +720,26 @@ async function runVerification(context) {
     const args = check.args.map((value) => String(value));
     const cwd =
       typeof check.cwd === "string" ? join(context.current.root, check.cwd) : context.current.root;
+    if (check.capability) {
+      const probe = check.capability.probe;
+      const probeCwd = typeof probe.cwd === "string" ? join(context.current.root, probe.cwd) : context.current.root;
+      const probeResult = await run(probe.executable, probe.args, { cwd: probeCwd });
+      const availability = classifyCapabilityProbe(check.capability, probeResult);
+      if (availability.status === "failed") throw new Error(`Capability probe failed for ${check.capability.id}: ${availability.reason}`);
+      if (availability.status === "unavailable") {
+        const declared = `${check.executable} ${args.join(" ")}`.trim();
+        console.log(`\n[verify unavailable] ${check.capability.id}: ${availability.reason}`);
+        gaps.push({ capability: check.capability.id, command: declared, reason: availability.reason });
+        continue;
+      }
+    }
     console.log(`\n[verify] ${check.executable} ${args.join(" ")}`);
     const result = await run(check.executable, args, { cwd, inherit: true });
     if (result.code !== 0)
       throw new Error(`Required verification failed: ${check.executable} ${args.join(" ")}`);
     passed.push(`${check.executable} ${args.join(" ")}`.trim());
   }
-  return passed;
+  return verificationEvidence(passed, gaps, context.configuration.requiredLocalVerification);
 }
 
 async function ensureLandingDescription(cwd, context, target) {
@@ -768,7 +779,8 @@ async function landOwnedWorkspace(cwd, options) {
   if (prior?.review && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
     && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
     if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
-    return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review };
+    return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review,
+      verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
   }
   const target = await ensureLandingDescription(cwd, context, preview.target);
   await assertDefaultReady(context);
@@ -799,7 +811,8 @@ async function landOwnedWorkspace(cwd, options) {
     requesterIdentity: options.requesterIdentity, implementationSessionFile: options.implementationSessionFile,
     runReview: options.runReview };
   await recordIndependentReviewRequest(exact, reviewOptions);
-  exact.verification = await runVerification(context);
+  const verification = await runVerification(context);
+  exact.verification = verificationReviewEvidence(verification);
   await assertIdentity();
   const review = await evaluateIndependentReview(exact, reviewOptions);
   if (!["not_requested", "pass", "waived"].includes(review.status)) {
@@ -810,15 +823,15 @@ async function landOwnedWorkspace(cwd, options) {
   await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
     await assertIdentity();
     await assertDefaultReady(context);
-    await writeLandingState(context, candidate, review, exact.verification, "prepared");
+    await writeLandingState(context, candidate, review, verification, "prepared");
     await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId], { inherit: true });
-    await writeLandingState(context, candidate, review, exact.verification);
+    await writeLandingState(context, candidate, review, verification);
     await completeIndependentReview(exact, reviewOptions);
     await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
   });
   const currentAfter = await revisionFacts(cwd, "@");
   if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch], { inherit: true });
-  return { context, artifact: candidate, review };
+  return { context, artifact: candidate, review, verification };
 }
 
 export async function cleanupLandedWorkspace(cwd = process.cwd()) {
