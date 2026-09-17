@@ -76,6 +76,8 @@ export function acquireWorkspaceLock(
   options?: { takeOver?: boolean },
 ): Promise<() => Promise<void>>;
 
+export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;
+
 export function normalizeDeclaredVerification(value: unknown): WorkspaceContext["configuration"]["requiredLocalVerification"];
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
 export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNumber?: number): ReturnType<typeof createWorkspace>;
