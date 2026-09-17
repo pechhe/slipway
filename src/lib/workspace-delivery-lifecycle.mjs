@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 /** Durable retirement policy shared by Peach and vanilla Pi. Time is only a
  * prerequisite; callers must prove identity, ancestry and exclusive access. */
 export const WORKSPACE_CLEANUP_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -26,6 +26,34 @@ export function cleanupRetentionReason(state, context, metadata, now = Date.now(
   if (!minimum || !Number.isFinite(Date.parse(due)) || Date.parse(due) < Date.parse(minimum)) return "invalid-cleanup-eligibility";
   if (now < Date.parse(due)) return "grace-period";
   return null;
+}
+
+/**
+ * Decide whether a historical landing still retires this workspace. A prior
+ * receipt remains immutable history. New source may continue only when the
+ * same workspace and Issue still own it, the exact landed artifact remains
+ * integrated, and later unintegrated source is now present. Writer ownership
+ * remains a separate authority check.
+ */
+export function workspaceContinuationDisposition(state, evidence) {
+  if (!state || state.phase !== "landed") return { kind: "active" };
+  const identityMatches = state.workspaceName === evidence.workspaceName
+    && resolve(state.workspacePath) === resolve(evidence.workspacePath)
+    && Boolean(state.integrationRoot)
+    && resolve(state.integrationRoot) === resolve(evidence.integrationRoot)
+    && state.integrationBranch === evidence.integrationBranch
+    && (state.issueNumber ?? null) === (evidence.issueNumber ?? null)
+    && /^[a-f0-9]{40,64}$/i.test(state.artifactCommitId ?? "");
+  if (!identityMatches) {
+    return { kind: "recovery_required", reason: "historical-landing-identity-mismatch" };
+  }
+  if (!evidence.landedArtifactIntegrated) {
+    return { kind: "recovery_required", reason: "historical-landed-artifact-not-integrated" };
+  }
+  if (evidence.hasUnintegratedWork) {
+    return { kind: "resume_unfinished", artifactCommitId: state.artifactCommitId };
+  }
+  return { kind: "landed_source", artifactCommitId: state.artifactCommitId };
 }
 
 export async function assertWorkspaceNotRetired(workspaceName) {

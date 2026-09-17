@@ -1,5 +1,5 @@
 import { postIntegrationPolicy } from "./post-integration-policy.mjs";
-import { cleanupEligibleAt, cleanupRetentionReason, assertWorkspaceNotRetired } from "./workspace-delivery-lifecycle.mjs";
+import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
@@ -88,7 +88,7 @@ export async function acquireWorkspaceLock(context, options = {}) {
 
 async function acquireWorkspaceLockUnlocked(context, options) {
   if (!context || context.current.name === "default") return async () => {};
-  await assertWorkspaceNotRetired(context.current.name);
+  await assertWorkspaceMutationAllowed(context);
   await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
   await mkdir(LOCK_HOME, { recursive: true, mode: 0o700 });
   const path = lockPath(context.current.name);
@@ -517,6 +517,39 @@ async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
   return Boolean(output.trim());
 }
 
+async function landingStateForContinuation(workspaceName) {
+  return await readJsonOptional(statePath(workspaceName))
+    ?? await readJsonOptional(join(STATE_HOME, "landed", `${workspaceName}.json`));
+}
+
+export async function workspaceContinuationState(context) {
+  if (!context || context.current.name === "default") return { kind: "active" };
+  const state = await landingStateForContinuation(context.current.name);
+  const metadata = await workspaceMetadata(context.current.name);
+  const issueNumber = typeof metadata?.issueNumber === "number" ? metadata.issueNumber : null;
+  return workspaceContinuationDisposition(state, {
+    workspaceName: context.current.name,
+    workspacePath: context.current.root,
+    integrationRoot: context.integration.root,
+    integrationBranch: context.integrationBranch,
+    issueNumber,
+    hasUnintegratedWork: await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch),
+    landedArtifactIntegrated: Boolean(
+      state?.artifactCommitId
+      && await revisionExists(context.integration.root, `${state.artifactCommitId} & ::${context.integrationBranch}`),
+    ),
+  });
+}
+
+export async function assertWorkspaceMutationAllowed(context) {
+  const continuation = await workspaceContinuationState(context);
+  if (continuation.kind === "active" || continuation.kind === "resume_unfinished") return;
+  if (continuation.kind === "landed_source") {
+    throw new Error("This workspace source is already landed. Resume finalization or continue in another Issue workspace.");
+  }
+  throw new Error(`Historical landing evidence requires explicit recovery before mutation (${continuation.reason})`);
+}
+
 async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
   if (!issueNumber) return;
   for (const workspace of await listWorkspaces(cwd)) {
@@ -547,7 +580,7 @@ async function attachWorkspaceIssueUnlocked(cwd, issueNumber) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default")
     throw new Error("Attach Issues only to isolated JJ workspaces");
-  await assertWorkspaceNotRetired(context.current.name);
+  await assertWorkspaceMutationAllowed(context);
   await assertIssueAvailable(cwd, issueNumber, context.current.name);
   const prior = await workspaceMetadata(context.current.name);
   if (prior?.issueNumber && prior.issueNumber !== issueNumber) throw new Error("This workspace already belongs to another Issue; preserve its identity");
@@ -636,7 +669,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
   if (context.current.name !== "default") {
-    await assertWorkspaceNotRetired(context.current.name);
+    await assertWorkspaceMutationAllowed(context);
     await writeWorkspaceTaskMetadata(context, task);
     if (options.issueNumber) await attachWorkspaceIssue(context.current.root, options.issueNumber);
     const readiness = await prepareWorkspaceDependencies(context.current.root);
@@ -808,7 +841,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
       if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
       return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review };
     }
-    await assertWorkspaceNotRetired(context.current.name);
+    await assertWorkspaceMutationAllowed(context);
     const lock = await activeWorkspaceLock(context.current.name);
     if (lock && (lock.surface === "peach" || lock.ownerAgentRunId || lock.revoking || ![process.pid, process.ppid].includes(lock.pid))) {
       throw new Error("Workspace has another live owner; use the owning surface or governed takeover before landing");
