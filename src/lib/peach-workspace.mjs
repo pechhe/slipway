@@ -7,7 +7,7 @@ import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue }
 import { randomUUID } from "node:crypto";
 import { evaluateIndependentReview, recordIndependentReviewRequest, completeIndependentReview } from "./independent-review-policy.mjs";
 import { spawn } from "node:child_process";
-import { access, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { classifyCapabilityProbe, normalizeVerificationDeclaration, verificationEvidence, verificationReviewEvidence } from "./verification-policy.mjs";
@@ -568,42 +568,45 @@ async function attachWorkspaceIssueUnlocked(cwd, issueNumber) {
   return metadata;
 }
 
-async function fileExists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
+/** Package-manager installation is the standalone Pi readiness authority. It is
+ *  intentionally workspace-local and lockfile-frozen: package managers may reuse
+ *  their immutable caches, but JJ workspaces never share mutable node_modules. */
+async function workspaceDependencyCommand(workspacePath) {
+  const raw = await readFile(join(workspacePath, "package.json"), "utf8").catch(() => null);
+  if (!raw) return null;
+  const packageManager = JSON.parse(raw).packageManager;
+  if (typeof packageManager !== "string") {
+    throw new Error(`Workspace dependency provisioning requires a declared packageManager in ${workspacePath}.`);
   }
+  if (packageManager === "bun" || packageManager.startsWith("bun@")) {
+    return {
+      command: "bun",
+      args: ["install", "--frozen-lockfile", "--prefer-offline", "--backend=clonefile"],
+    };
+  }
+  if (packageManager === "pnpm" || packageManager.startsWith("pnpm@")) {
+    return {
+      command: "pnpm",
+      args: ["install", "--frozen-lockfile", "--prefer-offline", "--package-import-method=clone"],
+    };
+  }
+  if (packageManager === "npm" || packageManager.startsWith("npm@")) {
+    return { command: "npm", args: ["ci", "--prefer-offline"] };
+  }
+  throw new Error(`Workspace dependency provisioning does not support package manager '${packageManager}'.`);
 }
 
-/** Bun/npm share a global package cache, so a fresh install is fast and, more
- *  importantly, authoritative: bun resolves exactly the workspace lockfile.
- *  Copying the canonical checkout's node_modules was tried earlier but could
- *  propagate a stale canonical install (a newer node_modules mtime than the
- *  lockfile is not a reliable freshness signal), so installs always go
- *  through the package manager. */
-async function materializeDependencies(workspacePath) {
-  if (!(await fileExists(join(workspacePath, "package.json")))) return false;
-  const useBun =
-    (await fileExists(join(workspacePath, "bun.lock"))) ||
-    (await fileExists(join(workspacePath, "bun.lockb")));
-  const command = useBun ? "bun" : "npm";
-  const args = useBun
-    ? ["install", "--frozen-lockfile", "--prefer-offline", "--backend=clonefile"]
-    : ["install"];
-  console.log(`[deps] ${command} install in ${basename(workspacePath)}...`);
-  const result = await run(command, args, { cwd: workspacePath, inherit: true });
+export async function prepareWorkspaceDependencies(workspacePath) {
+  const dependencyCommand = await workspaceDependencyCommand(workspacePath);
+  if (!dependencyCommand) return { state: "not_required", packageManager: null };
+  console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
+  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: true });
   if (result.code !== 0) {
     throw new Error(
       `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
     );
   }
-  return true;
-}
-
-export async function prepareWorkspaceDependencies(workspacePath) {
-  await materializeDependencies(workspacePath);
+  return { state: "ready", packageManager: dependencyCommand.command };
 }
 
 export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
@@ -618,7 +621,12 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
     if (options.issueNumber) {
       const existing = await findIssueWorkspace(cwd, options.issueNumber);
       await assertIssueWorkspaceBoundary(context.integration.root, options.issueNumber, existing?.name ?? context.current.name, runIssueBoundary, { existingBinding: Boolean(existing) });
-      if (existing?.root) return { ...(await workspaceContext(existing.root)), created: false, reused: true, workspacePath: existing.root };
+      if (existing?.root) {
+        const resumed = await workspaceContext(existing.root);
+        if (!resumed) throw new Error(`Issue #${options.issueNumber} workspace disappeared during resume`);
+        const readiness = await prepareWorkspaceDependencies(existing.root);
+        return { ...resumed, created: false, reused: true, workspacePath: existing.root, readiness };
+      }
     }
     return createWorkspaceUnlocked(task, cwd, options);
   });
@@ -631,7 +639,8 @@ async function createWorkspaceUnlocked(task, cwd, options) {
     await assertWorkspaceNotRetired(context.current.name);
     await writeWorkspaceTaskMetadata(context, task);
     if (options.issueNumber) await attachWorkspaceIssue(context.current.root, options.issueNumber);
-    return { ...context, created: false, workspacePath: context.current.root };
+    const readiness = await prepareWorkspaceDependencies(context.current.root);
+    return { ...context, created: false, workspacePath: context.current.root, readiness };
   }
   const project = slug(basename(context.integration.root), 24);
   const name = taskWorkspaceName(project, options.issueNumber);
@@ -652,8 +661,8 @@ async function createWorkspaceUnlocked(task, cwd, options) {
     throw new Error("Created workspace could not be verified");
   await writeWorkspaceTaskMetadata(created, task);
   if (options.issueNumber) await attachWorkspaceIssue(workspacePath, options.issueNumber);
-  await prepareWorkspaceDependencies(workspacePath);
-  return { ...created, created: true, reused: false, workspacePath };
+  const readiness = await prepareWorkspaceDependencies(workspacePath);
+  return { ...created, created: true, reused: false, workspacePath, readiness };
 }
 
 async function revisionFacts(cwd, revision) {
