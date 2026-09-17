@@ -1,3 +1,4 @@
+import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { cleanupEligibleAt, cleanupRetentionReason, assertWorkspaceNotRetired } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
@@ -205,7 +206,7 @@ export function parseWorkspaceList(output) {
   return entries;
 }
 
-export async function workspaceContext(cwd = process.cwd()) {
+export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
   let currentRoot;
   try {
     currentRoot = await jj(cwd, ["--ignore-working-copy", "workspace", "root"]);
@@ -225,7 +226,7 @@ export async function workspaceContext(cwd = process.cwd()) {
   if (!current) throw new Error("Current jj workspace is not registered");
   const integration = workspaces.find((entry) => entry.name === "default");
   if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
-  const configuration = await readConfiguration(integration.root);
+  const configuration = integratedBranch ? { integrationBranch: integratedBranch, requiredLocalVerification: [] } : await readConfiguration(integration.root);
   const integrationBranch = configuration.integrationBranch ?? (await inferIntegrationBranch(cwd));
   if (!(await revisionExists(cwd, integrationBranch))) {
     throw new Error(
@@ -251,6 +252,7 @@ async function readConfiguration(root) {
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
+  postIntegrationPolicy(parsed?.postIntegration);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
   const requiredLocalVerification = normalizeDeclaredVerification(checks);
@@ -903,6 +905,9 @@ async function cleanupLandedWorkspaceUnlocked(cwd) {
   );
   if (!integrated)
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
+  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
+  const external = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId, inspectOnly: true });
+  if (!external.ok) return { cleaned: false, reason: `post-integration-${external.status}` };
   await jj(context.integration.root, ["workspace", "forget", context.current.name]);
   await rm(context.current.root, { recursive: true, force: true });
   await rm(statePath(context.current.name), { force: true });
@@ -925,6 +930,9 @@ export async function assertWorkspaceDelivered(cwd) {
     || await workspaceHasUnintegratedWork(cwd, context.integrationBranch)) {
     throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
   }
+  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
+  const postIntegration = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId, inspectOnly: true });
+  if (!postIntegration.ok) throw new Error(`Source integrated; post-integration finalization remains ${postIntegration.status}`);
   await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
     const result = await run(executable, args, { cwd: root });
     if (result.code !== 0) throw new Error(result.stderr || "Completion bookkeeping unavailable");

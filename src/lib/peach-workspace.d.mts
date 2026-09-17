@@ -26,7 +26,7 @@ export class CommandError extends Error {}
 export function explicitIssueNumber(value?: string | null): number | null;
 export function readWorkspaceMode(): Promise<"isolated" | "direct">;
 export function writeWorkspaceMode(mode: "isolated" | "direct"): Promise<"isolated" | "direct">;
-export function workspaceContext(cwd?: string): Promise<WorkspaceContext | null>;
+export function workspaceContext(cwd?: string, integratedBranch?: string): Promise<WorkspaceContext | null>;
 export function inspectWorkspaces(cwd?: string): Promise<WorkspaceEntry[]>;
 export function inspectWorkspace(cwd?: string): Promise<WorkspaceEntry | null>;
 export function listWorkspaces(cwd?: string): Promise<WorkspaceEntry[]>;
