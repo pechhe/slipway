@@ -991,7 +991,7 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
     const result = await run(executable, args, { cwd: root });
     if (result.code !== 0) throw new Error(result.stderr || "Live Issue eligibility unavailable");
     return result.stdout;
-  });
+  }, (candidateNumber) => findIssueWorkspace(context.integration.root, candidateNumber));
   const existing = issueNumber ? await findIssueWorkspace(cwd, issueNumber) : null;
   if (existing?.lock) throw new Error(`Issue #${issueNumber} has a current writer in jj:${existing.name}`);
   return createWorkspace(task, context.integration.root, { issueNumber });
