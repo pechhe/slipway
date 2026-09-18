@@ -72,6 +72,7 @@ export function runBoundedProcess(request) {
       const output = redactAndBoundProcessOutput(result, maxStoredOutputBytes, request.redactOutput);
       return {
         ...result,
+        cancelled: result.cancelled === true,
         ...output,
         outputSha256: processOutputSha256(output.stdout, output.stderr),
         ...result.error ? { error: redactError(result.error, request.redactOutput) } : {}
@@ -84,6 +85,7 @@ export function runBoundedProcess(request) {
         exitCode: null,
         signal: null,
         timedOut: false,
+        cancelled: request.abortSignal?.aborted === true,
         outputSha256: processOutputSha256("", ""),
         ...request.fullStdoutHashPrefix === undefined ? {} : { fullStdoutSha256: createHash("sha256").update(request.fullStdoutHashPrefix).digest("hex") },
         error: redactError(error, request.redactOutput)
@@ -137,6 +139,7 @@ export function runBoundedProcess(request) {
   }));
   return Effect.runPromiseExit(lifetime, { signal: request.abortSignal }).then((exit) => {
     const failure = Exit.isFailure(exit) ? Cause.failureOption(exit.cause) : Option.none();
+    const cancelled = Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause);
     if (Exit.isFailure(exit) && Option.isNone(failure) && !Cause.isInterruptedOnly(exit.cause)) {
       throw Cause.squash(exit.cause);
     }
@@ -148,6 +151,7 @@ export function runBoundedProcess(request) {
       exitCode: error ? null : closed?.exitCode ?? null,
       signal: closed?.signal ?? null,
       timedOut: Option.isSome(failure) && failure.value._tag === "ProcessDeadline",
+      cancelled,
       outputSha256: processOutputSha256(output.stdout, output.stderr),
       ...fullStdoutHash ? { fullStdoutSha256: fullStdoutHash.digest("hex") } : {},
       ...error ? { error } : {}

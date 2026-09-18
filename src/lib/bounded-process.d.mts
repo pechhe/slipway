@@ -27,6 +27,7 @@ export type BoundedProcessResult = BoundedProcessOutput & {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  cancelled: boolean;
   outputSha256: string;
   fullStdoutSha256?: string;
   error?: string;
