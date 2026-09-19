@@ -7,7 +7,13 @@ export type CapabilityDeclaration = {
   unavailableStderrIncludes: string[];
 };
 export type VerificationDeclaration = VerificationCommand & { capability?: CapabilityDeclaration };
-export type VerificationGap = { capability: string; command: string; reason: string };
+export type VerificationGap = {
+  capability: string;
+  command: string;
+  reason: string;
+  probeCommand?: string;
+  probeExitCode?: number | null;
+};
 export type VerificationEvidence = {
   status: "passed" | "passed_with_gaps";
   passed: string[];
@@ -17,7 +23,10 @@ export type VerificationEvidence = {
 export function normalizeVerificationDeclaration(value: unknown, field?: string): VerificationDeclaration;
 export function classifyCapabilityProbe(capability: CapabilityDeclaration, result: {
   code?: number; exitCode?: number | null; signal?: string | null; stderr?: string;
-  timedOut?: boolean; error?: unknown;
+  timedOut?: boolean; cancelled?: boolean; error?: unknown;
 }): { status: "available" } | { status: "unavailable" | "failed"; reason: string };
+export function verificationGap(capability: CapabilityDeclaration, command: string, result: {
+  code?: number; exitCode?: number | null;
+}, reason: string): VerificationGap;
 export function verificationEvidence(passed: string[], gaps: VerificationGap[], declarations: unknown): VerificationEvidence;
 export function verificationReviewEvidence(evidence: VerificationEvidence): string[];

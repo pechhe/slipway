@@ -31,7 +31,7 @@ export function normalizeVerificationDeclaration(value, field = "requiredLocalVe
 }
 
 export function classifyCapabilityProbe(capability, result) {
-  if (!result || result.timedOut || result.error || result.signal) return { status: "failed", reason: "probe did not complete normally" };
+  if (!result || result.timedOut || result.cancelled || result.error || result.signal) return { status: "failed", reason: "probe did not complete normally" };
   if (result.code === 0 || result.exitCode === 0) return { status: "available" };
   const exitCode = result.code ?? result.exitCode;
   const stderr = String(result.stderr ?? "");
@@ -40,6 +40,18 @@ export function classifyCapabilityProbe(capability, result) {
   return declared
     ? { status: "unavailable", reason: stderr.trim().slice(0, 2_000) }
     : { status: "failed", reason: stderr.trim().slice(0, 2_000) || `probe exited ${exitCode}` };
+}
+
+const boundedCommand = (value) => Buffer.from(String(value), "utf8").subarray(0, 1_000).toString("utf8").replace(/\uFFFD+$/u, "");
+
+export function verificationGap(capability, command, result, reason) {
+  return {
+    capability: capability.id,
+    command: boundedCommand(command),
+    reason: String(reason).slice(0, 2_000),
+    probeCommand: boundedCommand([capability.probe.executable, ...capability.probe.args].join(" ")),
+    probeExitCode: result.code ?? result.exitCode ?? null,
+  };
 }
 
 export function verificationEvidence(passed, gaps, declarations) {

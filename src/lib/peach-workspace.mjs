@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { classifyCapabilityProbe, normalizeVerificationDeclaration, verificationEvidence, verificationReviewEvidence } from "./verification-policy.mjs";
+import { classifyCapabilityProbe, normalizeVerificationDeclaration, verificationEvidence, verificationGap, verificationReviewEvidence } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -801,7 +801,7 @@ async function runVerification(context) {
       if (availability.status === "unavailable") {
         const declared = `${check.executable} ${args.join(" ")}`.trim();
         console.log(`\n[verify unavailable] ${check.capability.id}: ${availability.reason}`);
-        gaps.push({ capability: check.capability.id, command: declared, reason: availability.reason });
+        gaps.push(verificationGap(check.capability, declared, probeResult, availability.reason));
         continue;
       }
     }
