@@ -38,6 +38,17 @@ test("no route or parent readiness admits a parked or unready child", async () =
   await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, async () => null), /not ready/);
 });
 
+test("canonical external blocker prevents unattended implementation", async () => {
+  const run = async (command: string, args: string[]) => {
+    if (command === "jj") return "origin https://github.com/owner/repo.git";
+    const url = args[1]!;
+    if (url.endsWith("issues/10")) return JSON.stringify([{ number: 10, state: "open", labels: ["epic"] }]);
+    if (url.includes("/sub_issues")) return JSON.stringify([[{ number: 11, state: "open" }]]);
+    return JSON.stringify([{ number: 11, state: "open", labels: ["ready-for-agent", "blocked: external"] }]);
+  };
+  await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, async () => null), /not ready/);
+});
+
 test("continuation requires the exact child receipt and closed Issue", async () => {
   let closed = false;
   let commit = "a".repeat(40);

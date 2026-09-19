@@ -55,7 +55,7 @@ export async function selectImplementationIssue(root, scopeNumber, branch, run, 
     const [issue] = await api(`issues/${candidate.number}`);
     const current = labels(issue ?? {});
     if (!issue || issue.state !== "open" || !current.includes("ready-for-agent")
-      || current.some((label) => ["discovery", "someday", "programme", "super-epic"].includes(label))) {
+      || current.some((label) => ["discovery", "someday", "programme", "super-epic", "blocked: external"].includes(label))) {
       reasons.push(`#${candidate.number} is not ready`); continue;
     }
     if (current.includes("epic") && (await api(`issues/${issue.number}/sub_issues?per_page=100`)).length) {
