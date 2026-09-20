@@ -43,10 +43,10 @@ export async function assertIssueWorkspaceBoundary(root, issueNumber, workspaceN
     const metadata = await optionalJson(join(stateRoot, "workspaces", file));
     if (!metadata || metadata.workspaceName === workspaceName || !metadata.issueNumber
       || typeof metadata.integrationRoot !== "string" || resolve(metadata.integrationRoot) !== resolve(root)) continue;
+    if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
     const related = metadata.issueNumber === issueNumber || requestedChildren.has(metadata.issueNumber)
       || (await descendants(metadata.issueNumber)).has(issueNumber);
     if (!related) continue;
-    if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
     throw new Error(`Issue #${issueNumber} overlaps preserved workspace jj:${metadata.workspaceName} for #${metadata.issueNumber}; reconcile that workspace through governed delivery/recovery before acquiring source authority. Its work has been preserved.`);
   }
 }
