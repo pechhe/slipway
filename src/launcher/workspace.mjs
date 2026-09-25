@@ -13,11 +13,14 @@ import {
   workspaceContext,
   writeWorkspaceMode,
 } from "../lib/peach-workspace.mjs";
+import { runReviewCommand } from "../github-reviews/command.ts";
 
 const [command, ...rest] = process.argv.slice(2);
 
 try {
-  if (command === "status") {
+  if (command === "review") {
+    console.log(JSON.stringify(await runReviewCommand(rest, process.cwd()), null, 2));
+  } else if (command === "status") {
     const context = await workspaceContext();
     console.log(context
       ? JSON.stringify({ mode: await readWorkspaceMode(), workspace: context.current, integration: context.integration, integrationBranch: context.integrationBranch }, null, 2)
@@ -73,7 +76,7 @@ try {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${result.reason}.`);
   } else {
-    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|preview|land|finalize|cleanup>");
+    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|preview|land|finalize|cleanup|review>");
     process.exitCode = 2;
   }
 } catch (error) {
