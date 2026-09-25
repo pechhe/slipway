@@ -13,7 +13,7 @@ import {
   workspaceContext,
   writeWorkspaceMode,
 } from "../lib/peach-workspace.mjs";
-import { runReviewCommand } from "../github-reviews/command.ts";
+import { runReviewCommand } from "../github-reviews/index.ts";
 
 const [command, ...rest] = process.argv.slice(2);
 

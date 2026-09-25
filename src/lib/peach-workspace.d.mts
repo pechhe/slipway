@@ -57,14 +57,14 @@ export function removeWorkspace(
 export function landWorkspace(cwd?: string, options?: {
   localOnly?: boolean;
   independentReview?: boolean;
-  independentReviewWaiver?: import("../independent-review.ts").IndependentReviewWaiver;
+  independentReviewWaiver?: import("../delivery/review/index.ts").IndependentReviewWaiver;
   requesterIdentity?: string; implementationSessionFile?: string;
   runReview?: import("./independent-review-policy.mjs").ReviewPolicyOptions["runReview"];
 }): Promise<{
   ok: boolean;
   finalization: import("./workspace-finalization.mjs").WorkspaceFinalizationResult;
   artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
-  review: import("../independent-review.ts").IndependentReviewOutcome;
+  review: import("../delivery/review/index.ts").IndependentReviewOutcome;
   verification: import("./verification-policy.mjs").VerificationEvidence;
 }>;
 export function landingPreview(cwd?: string): Promise<{

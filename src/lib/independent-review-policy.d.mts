@@ -1,4 +1,4 @@
-import type { IndependentReviewCandidate, IndependentReviewOutcome, IndependentReviewWaiver } from "../independent-review.ts";
+import type { IndependentReviewCandidate, IndependentReviewOutcome, IndependentReviewWaiver } from "../delivery/review/index.ts";
 export const INDEPENDENT_REVIEW_POLICY: "explicit-request-v1";
 export type ReviewPolicyOptions = {
   required?: boolean; waiver?: IndependentReviewWaiver; stateHome?: string;
