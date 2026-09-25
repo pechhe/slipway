@@ -12,7 +12,10 @@ export async function withWorkspaceTransaction(key, operation) {
   const target = join(root, createHash("sha256").update(key).digest("hex"));
   const release = await lockfile.lock(target, {
     realpath: false, stale: 120000, update: 10000,
-    retries: { retries: 200, minTimeout: 25, maxTimeout: 100 },
+    // A healthy holder refreshes every 10 seconds. Wait beyond the stale
+    // boundary so loaded workspace provisioning serializes instead of failing
+    // while that holder is still making progress.
+    retries: { retries: 1400, minTimeout: 25, maxTimeout: 100 },
   });
   try { return await operation(); } finally { await release(); }
 }

@@ -645,7 +645,7 @@ export async function prepareWorkspaceDependencies(workspacePath) {
 export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
-  return withWorkspaceTransaction(`allocate:${context.integration.root}:${options.issueNumber ?? "direct"}`, async () => {
+  return withWorkspaceTransaction(`allocate:${context.integration.root}`, async () => {
     await assertIssueEligible(context.integration.root, options.issueNumber, context.integrationBranch, async (executable, args, root) => {
       const result = await run(executable, args, { cwd: root });
       if (result.code !== 0) throw new Error(result.stderr || "Issue eligibility unavailable");
