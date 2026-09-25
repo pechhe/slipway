@@ -68,3 +68,15 @@ export function verificationReviewEvidence(evidence) {
     ...evidence.gaps.map((gap) => `UNAVAILABLE ${gap.capability}: ${gap.command} (${gap.reason})`),
   ];
 }
+
+export function normalizeDeclaredVerification(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry, index) => {
+    try {
+      return [normalizeVerificationDeclaration(entry, `requiredLocalVerification[${index}]`)];
+    } catch {
+      return [];
+    }
+  });
+}
+

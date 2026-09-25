@@ -57,7 +57,7 @@ export async function finalizationCwd(root, relative) {
 
 
 /** Read a policy from a proven object, never the caller's working files. No external effects. */
-export async function readPostIntegrationPolicy(selectedGitDirectory, commit, environment = sanitizedProcessEnv) {
+export async function readExactExecutionPolicy(selectedGitDirectory, commit, environment = sanitizedProcessEnv) {
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error("An exact commit is required");
   const selectedDirectory = await realpath(selectedGitDirectory);
   const commonDirectory = (await finalizationGit(selectedDirectory, ["rev-parse", "--git-common-dir"], environment)).trim();
@@ -65,7 +65,18 @@ export async function readPostIntegrationPolicy(selectedGitDirectory, commit, en
   const resolved = (await finalizationGit(gitDirectory, ["rev-parse", `${commit}^{commit}`], environment)).trim();
   if (resolved !== commit) throw new Error("Commit identity changed");
   const listed = (await finalizationGit(gitDirectory, ["ls-tree", "--name-only", commit, "--", ".peach/execution.json"], environment)).trim();
-  if (!listed) return { gitDirectory, policy: null };
+  if (!listed) return { gitDirectory, configuration: null };
   const configuration = JSON.parse(await finalizationGit(gitDirectory, ["show", `${commit}:.peach/execution.json`], environment));
-  return { gitDirectory, policy: postIntegrationPolicy(configuration.postIntegration) };
+  const legacyLocalOnly = configuration?.version === undefined
+    && configuration?.postIntegration === undefined && configuration?.sourcePublication === undefined;
+  if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)
+    || (!legacyLocalOnly && configuration.version !== 1)) {
+    throw new Error("Integrated source has an invalid execution policy");
+  }
+  return { gitDirectory, configuration };
+}
+
+export async function readPostIntegrationPolicy(selectedGitDirectory, commit, environment = sanitizedProcessEnv) {
+  const { gitDirectory, configuration } = await readExactExecutionPolicy(selectedGitDirectory, commit, environment);
+  return { gitDirectory, policy: postIntegrationPolicy(configuration?.postIntegration) };
 }

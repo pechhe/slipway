@@ -55,11 +55,14 @@ export function removeWorkspace(
   options?: { allowWork?: boolean; allowIssue?: boolean },
 ): Promise<void>;
 export function landWorkspace(cwd?: string, options?: {
+  localOnly?: boolean;
   independentReview?: boolean;
   independentReviewWaiver?: import("../independent-review.ts").IndependentReviewWaiver;
   requesterIdentity?: string; implementationSessionFile?: string;
   runReview?: import("./independent-review-policy.mjs").ReviewPolicyOptions["runReview"];
 }): Promise<{
+  ok: boolean;
+  finalization: import("./workspace-finalization.mjs").WorkspaceFinalizationResult;
   artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
   review: import("../independent-review.ts").IndependentReviewOutcome;
   verification: import("./verification-policy.mjs").VerificationEvidence;
@@ -81,3 +84,5 @@ export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promi
 export function normalizeDeclaredVerification(value: unknown): WorkspaceContext["configuration"]["requiredLocalVerification"];
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
 export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNumber?: number): ReturnType<typeof createWorkspace>;
+
+export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";

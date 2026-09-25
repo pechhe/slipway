@@ -1,4 +1,5 @@
 import { postIntegrationPolicy } from "./post-integration-policy.mjs";
+import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
@@ -10,7 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { classifyCapabilityProbe, normalizeVerificationDeclaration, verificationEvidence, verificationGap, verificationReviewEvidence } from "./verification-policy.mjs";
+import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap, verificationReviewEvidence } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -236,23 +237,13 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
   return { current, integration, integrationBranch, configuration };
 }
 
-export function normalizeDeclaredVerification(value) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry, index) => {
-    try {
-      return [normalizeVerificationDeclaration(entry, `requiredLocalVerification[${index}]`)];
-    } catch {
-      return [];
-    }
-  });
-}
-
 async function readConfiguration(root) {
   let raw;
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
   postIntegrationPolicy(parsed?.postIntegration);
+  sourcePublicationPolicy(parsed?.sourcePublication);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
   const requiredLocalVerification = normalizeDeclaredVerification(checks);
@@ -732,10 +723,10 @@ function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
-async function writeLandingState(context, artifact, review, verification, phase = "landed") {
+async function writeLandingState(context, artifact, review, verification, phase = "landed", localOnly) {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
   await writeWorkspaceJson(statePath(context.current.name), {
-    version: 1, phase, workspaceName: context.current.name, workspacePath: context.current.root,
+    version: 1, phase, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
     integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
     artifactDescription: artifact.description, review, verification: verification.status,
@@ -834,12 +825,14 @@ async function ensureLandingDescription(cwd, context, target) {
 export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
-  return withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
+  if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
+  const result = await withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
     const prior = await readJsonOptional(statePath(context.current.name));
     if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
       && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
       if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
-      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review };
+      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review,
+        verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
     }
     await assertWorkspaceMutationAllowed(context);
     const lock = await activeWorkspaceLock(context.current.name);
@@ -849,18 +842,16 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
     const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context, {});
     try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
   });
+  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
+  const finalization = await finalizeIntegratedWorkspace(cwd, {
+    expectedCommitSha: result.artifact.commitId, localOnly: options.localOnly,
+  });
+  return { ...result, ok: finalization.ok, finalization };
 }
 
 async function landOwnedWorkspace(cwd, options) {
   const preview = await landingPreview(cwd);
   const { context } = preview;
-  const prior = await readJsonOptional(statePath(context.current.name));
-  if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
-    && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
-    if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
-    return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review,
-      verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
-  }
   const target = await ensureLandingDescription(cwd, context, preview.target);
   await assertDefaultReady(context);
   await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch], { inherit: true });
@@ -902,9 +893,9 @@ async function landOwnedWorkspace(cwd, options) {
   await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
     await assertIdentity();
     await assertDefaultReady(context);
-    await writeLandingState(context, candidate, review, verification, "prepared");
+    await writeLandingState(context, candidate, review, verification, "prepared", options.localOnly);
     await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId], { inherit: true });
-    await writeLandingState(context, candidate, review, verification);
+    await writeLandingState(context, candidate, review, verification, "landed", options.localOnly);
     await completeIndependentReview(exact, reviewOptions);
     await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
   });
@@ -949,7 +940,10 @@ async function cleanupLandedWorkspaceUnlocked(cwd) {
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
   const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
   const external = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId, inspectOnly: true });
-  if (!external.ok) return { cleaned: false, reason: `post-integration-${external.status}` };
+  if (!external.ok) {
+    const status = external.sourcePublication?.status ?? external.postIntegration?.status ?? "pending";
+    return { cleaned: false, reason: "delivery-finalization-" + status };
+  }
   await jj(context.integration.root, ["workspace", "forget", context.current.name]);
   await rm(context.current.root, { recursive: true, force: true });
   await rm(statePath(context.current.name), { force: true });
@@ -973,8 +967,8 @@ export async function assertWorkspaceDelivered(cwd) {
     throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
   }
   const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
-  const postIntegration = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId });
-  if (!postIntegration.ok) throw new Error(`Source integrated; post-integration finalization remains ${postIntegration.status}`);
+  const finalization = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId });
+  if (!finalization.ok) throw new Error("Source integrated; delivery finalization remains incomplete: " + (finalization.reason ?? "unknown"));
   await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
     const result = await run(executable, args, { cwd: root });
     if (result.code !== 0) throw new Error(result.stderr || "Completion bookkeeping unavailable");
@@ -996,3 +990,7 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
   if (existing?.lock) throw new Error(`Issue #${issueNumber} has a current writer in jj:${existing.name}`);
   return createWorkspace(task, context.integration.root, { issueNumber });
 }
+
+export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";
+
+export { normalizeDeclaredVerification } from "./verification-policy.mjs";

@@ -30,3 +30,5 @@ export function verificationGap(capability: CapabilityDeclaration, command: stri
 }, reason: string): VerificationGap;
 export function verificationEvidence(passed: string[], gaps: VerificationGap[], declarations: unknown): VerificationEvidence;
 export function verificationReviewEvidence(evidence: VerificationEvidence): string[];
+
+export function normalizeDeclaredVerification(value: unknown): VerificationDeclaration[];
