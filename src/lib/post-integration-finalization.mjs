@@ -54,7 +54,9 @@ export async function finalizePostIntegration(input) {
     if (previous?.status === "complete" || input.inspectOnly === true && previous)
       return previous;
     const evidence = { sourceIntegrated: true, integratedCommitSha: commit, policyDigest, target: policy.target, idempotencyKey: identity };
-    const approved = input.approval === undefined && previous?.approved === true || exactPostIntegrationApproval(input.approval, commit, policyDigest, policy.target);
+    const policyApproved = policy.approvalMode === "automatic-development";
+    const humanApproved = exactPostIntegrationApproval(input.approval, commit, policyDigest, policy.target);
+    const approved = policyApproved || input.approval === undefined && previous?.approved === true || humanApproved;
     if (!approved || input.inspectOnly === true) {
       const pending = {
         ...evidence,
@@ -67,7 +69,11 @@ export async function finalizePostIntegration(input) {
         await writeWorkspaceJson(statePath, pending);
       return pending;
     }
-    const accepted = { ...evidence, approved: true };
+    const accepted = {
+      ...evidence,
+      approved: true,
+      authorization: policyApproved ? "repository-policy" : previous?.authorization ?? "human"
+    };
     const attempt = (previous?.attempt ?? 0) + 1;
     await writeWorkspaceJson(statePath, { ...accepted, ok: false, status: "running", attempt });
     let reason = "Integration tip changed before finalization";

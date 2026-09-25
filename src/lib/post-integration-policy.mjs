@@ -26,6 +26,10 @@ export function postIntegrationPolicy(value) {
   if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(key) || key.startsWith("PEACH_FINALIZATION_") || ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "NODE_OPTIONS", "BUN_OPTIONS"].includes(key))) {
     throw new Error("Invalid post-integration environment declaration");
   }
+  const approvalMode = row.approvalMode ?? "explicit-human";
+  if (!["explicit-human", "automatic-development"].includes(approvalMode)) {
+    throw new Error("Invalid post-integration approval mode");
+  }
   return {
     version: 1,
     target: row.target,
@@ -33,7 +37,8 @@ export function postIntegrationPolicy(value) {
     command: command(row.command),
     targetProbe: command(row.targetProbe),
     timeoutMs: Number(row.timeoutMs),
-    environmentKeys: [...new Set(keys)]
+    environmentKeys: [...new Set(keys)],
+    approvalMode
   };
 }
 export function postIntegrationPolicyDigest(policy) {

@@ -7,6 +7,7 @@ export type PostIntegrationPolicy = {
   targetProbe: FinalizationCommand;
   timeoutMs: number;
   environmentKeys: string[];
+  approvalMode: "explicit-human" | "automatic-development";
 };
 export type PostIntegrationApproval = {
   humanApproved: true;

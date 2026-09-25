@@ -973,7 +973,7 @@ export async function assertWorkspaceDelivered(cwd) {
     throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
   }
   const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
-  const postIntegration = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId, inspectOnly: true });
+  const postIntegration = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId });
   if (!postIntegration.ok) throw new Error(`Source integrated; post-integration finalization remains ${postIntegration.status}`);
   await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
     const result = await run(executable, args, { cwd: root });

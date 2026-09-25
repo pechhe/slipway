@@ -8,6 +8,7 @@ export type PostIntegrationResult = {
   idempotencyKey?: string;
   attempt?: number;
   approved?: true;
+  authorization?: "human" | "repository-policy";
   reason?: string;
 };
 
