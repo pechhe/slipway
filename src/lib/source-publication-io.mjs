@@ -71,9 +71,9 @@ export function publicationIO(gitDirectory, environment, abortSignal) {
     if (fields.length % 6) throw new PublicationFailure("invalid_history", "Outgoing commit metadata is incomplete");
     const commits = [];
     for (let index = 0; index < fields.length; index += 6) {
-      const [sha, author, email, committer, committerEmail, message] = fields.slice(index, index + 6).map((value) => value.trim());
-      if (!EXACT_COMMIT.test(sha) || !author || !email || !committer || !committerEmail || !message) {
-        throw new PublicationFailure("unpublishable_commit", "Outgoing commit " + sha.slice(0, 12) + " has missing author, committer or description metadata");
+      const [sha, author, email, committer, committerEmail] = fields.slice(index, index + 6).map((value) => value.trim());
+      if (!EXACT_COMMIT.test(sha) || !author || !email || !committer || !committerEmail) {
+        throw new PublicationFailure("unpublishable_commit", "Outgoing commit " + sha.slice(0, 12) + " has missing author or committer identity metadata");
       }
       commits.push(sha);
     }
