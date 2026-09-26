@@ -73,7 +73,7 @@ export async function finalizeIntegratedWorkspace(cwd, options) {
   const postIntegration = await finalizePostIntegration({
     gitDirectory, integratedCommitSha: expected,
     approval: options.approval, inspectOnly: options.inspectOnly === true, abortSignal: options.abortSignal,
-    readIntegrationTip,
+    readIntegrationTip, recoverDescendant: options.recoverDescendant === true,
   });
   if (!postIntegration.ok) {
     return {

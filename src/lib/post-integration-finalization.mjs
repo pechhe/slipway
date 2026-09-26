@@ -7,7 +7,54 @@ import path from "node:path";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { exactPostIntegrationApproval, postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
-import { finalizationCwd, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+import { finalizationCwd, readExactExecutionPolicy, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+
+class HistoricalMigrationFailure extends Error {}
+
+async function historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal) {
+  const tip = (await input.readIntegrationTip()).trim();
+  if (tip === commit) return;
+  if (!input.recoverDescendant || !/^[a-f0-9]{40}$/.test(tip))
+    throw new HistoricalMigrationFailure("Integration tip changed before finalization");
+  const ancestor = await runBoundedProcess({
+    executable: "git", args: ["--git-dir", gitDirectory, "merge-base", "--is-ancestor", commit, tip],
+    cwd: gitDirectory, env: environmentFactory(), abortSignal, timeoutMs: 30000, maxOutputBytes: 1024,
+  });
+  if (ancestor.exitCode !== 0 || ancestor.timedOut || ancestor.error || ancestor.signal || ancestor.stdoutTruncated || ancestor.stderrTruncated)
+    throw new HistoricalMigrationFailure("Historical artifact is no longer in integration history");
+  const [exact, live] = await Promise.all([
+    readExactExecutionPolicy(gitDirectory, commit, environmentFactory),
+    readExactExecutionPolicy(gitDirectory, tip, environmentFactory),
+  ]);
+  const migration = exact.configuration?.migrationFinalization;
+  if (migration?.mode !== "late_bound_serialized"
+    || JSON.stringify(migration) !== JSON.stringify(live.configuration?.migrationFinalization)
+    || postIntegrationPolicyDigest((await readPostIntegrationPolicy(gitDirectory, tip, environmentFactory)).policy) !== policyDigest)
+    throw new HistoricalMigrationFailure("Historical migration policy changed or is not recoverable");
+  if (!Array.isArray(migration.triggerPaths) || !Array.isArray(migration.artifactPaths))
+    throw new HistoricalMigrationFailure("Historical migration input paths are missing");
+  const commandInputs = [exact.configuration.postIntegration.command, exact.configuration.postIntegration.targetProbe]
+    .flatMap((command) => {
+      const cwd = command.cwd ?? ".";
+      return [path.posix.join(cwd, "package.json"), ...command.args
+        .filter((arg) => /\.(?:[cm]?js|ts)$/.test(arg) && !arg.startsWith("-"))
+        .map((arg) => path.posix.dirname(path.posix.join(cwd, arg)))];
+    });
+  const protectedPaths = [...new Set([
+    ".peach/execution.json",
+    ...migration.triggerPaths, ...migration.artifactPaths,
+    ...commandInputs,
+  ])];
+  if (protectedPaths.some((value) => typeof value !== "string" || !value || path.isAbsolute(value)
+    || value.startsWith(":") || value.includes("\\") || value.split("/").includes("..")))
+    throw new HistoricalMigrationFailure("Historical migration input paths are unsafe");
+  const unchanged = await runBoundedProcess({
+    executable: "git", args: ["--git-dir", gitDirectory, "diff", "--quiet", commit, tip, "--", ...protectedPaths],
+    cwd: gitDirectory, env: environmentFactory(), abortSignal, timeoutMs: 30000, maxOutputBytes: 1024,
+  });
+  if (unchanged.exitCode !== 0 || unchanged.timedOut || unchanged.error || unchanged.signal || unchanged.stdoutTruncated || unchanged.stderrTruncated)
+    throw new HistoricalMigrationFailure("Historical migration inputs changed after integration");
+}
 // A separate external-target lease, not a long-held workspace identity transaction.
 function withTargetLease(directory, identity, operation) {
   const abort = new AbortController();
@@ -103,8 +150,7 @@ export async function finalizePostIntegration(input) {
     await writeWorkspaceJson(statePath, { ...accepted, ok: false, status: "running", attempt });
     let reason = "Integration tip changed before finalization";
     try {
-      if ((await input.readIntegrationTip()).trim() !== commit)
-        throw new Error(reason);
+      await historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal);
       reason = "Exact source preparation failed";
       const complete = await withFinalizationSource(gitDirectory, commit, async (root) => {
         const environment = environmentFactory();
@@ -128,8 +174,7 @@ export async function finalizePostIntegration(input) {
         if (!target || target.target !== policy.target)
           throw new Error(reason);
         reason = "Integration tip changed before external-state finalization";
-        if ((await input.readIntegrationTip()).trim() !== commit)
-          throw new Error(reason);
+        await historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal);
         reason = "Finalization command failed or its outcome is unknown; retry with the same artifact key";
         const result = await runBoundedProcess({
           executable: policy.command.executable,
@@ -143,8 +188,7 @@ export async function finalizePostIntegration(input) {
         if (result.exitCode !== 0 || result.timedOut || result.error || result.signal)
           throw new Error(reason);
         reason = "Integration tip changed during finalization; external outcome requires reconciliation";
-        if ((await input.readIntegrationTip()).trim() !== commit)
-          throw new Error(reason);
+        await historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal);
         return { ...accepted, ok: true, status: "complete", attempt };
       }, environmentFactory, abortSignal);
       reason = "Finalization interrupted or external target lease lost; external outcome requires reconciliation";
@@ -152,7 +196,8 @@ export async function finalizePostIntegration(input) {
       reason = "External finalization succeeded but its local receipt could not be persisted; retry with the same key";
       await writeWorkspaceJson(statePath, complete);
       return complete;
-    } catch {
+    } catch (error) {
+      if (error instanceof HistoricalMigrationFailure) reason = error.message;
       const failed = { ...accepted, ok: false, status: "failed", attempt, reason };
       await writeWorkspaceJson(statePath, failed);
       return failed;

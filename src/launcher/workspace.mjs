@@ -63,12 +63,13 @@ try {
     const expectedCommitSha = commitIndex >= 0 ? rest[commitIndex + 1] : undefined;
     const flags = rest.filter((_value, index) => index !== commitIndex && index !== commitIndex + 1);
     if (!/^[a-f0-9]{40}$/.test(expectedCommitSha ?? "")
-      || flags.some((flag) => !["--inspect", "--local-only", "--publish"].includes(flag))
+      || flags.some((flag) => !["--inspect", "--local-only", "--publish", "--recover-descendant"].includes(flag))
       || flags.includes("--local-only") && flags.includes("--publish")) {
-      throw new Error("Usage: peach-workspace finalize --commit SHA [--inspect] [--local-only|--publish]");
+      throw new Error("Usage: peach-workspace finalize --commit SHA [--inspect] [--local-only|--publish] [--recover-descendant]");
     }
     const result = await finalizeIntegratedWorkspace(process.cwd(), { expectedCommitSha,
       inspectOnly: flags.includes("--inspect"),
+      recoverDescendant: flags.includes("--recover-descendant"),
       localOnly: flags.includes("--local-only") ? true : flags.includes("--publish") ? false : undefined });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 1;
