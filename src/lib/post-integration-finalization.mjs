@@ -17,9 +17,32 @@ function withTargetLease(directory, identity, operation) {
       retries: { retries: 200, minTimeout: 25, maxTimeout: 100 },
       onCompromised: () => abort.abort(),
     })),
-    () => Effect.tryPromise(() => operation(abort.signal)),
+    () => Effect.tryPromise({
+      try: () => operation(abort.signal),
+      catch: (cause) => cause instanceof Error ? cause : new Error("Post-integration operation failed"),
+    }),
     (release) => Effect.promise(release),
   ));
+}
+
+// The original v1 normalizer omitted approvalMode. Reuse only a completed,
+// explicitly approved legacy receipt for this exact operation, never its grant
+// for unfinished work. Returning the original record preserves its audit key.
+function completedLegacyReceipt(previous, gitDirectory, commit, policy) {
+  if (previous.status !== "complete" || previous.ok !== true || previous.approved !== true
+    || previous.attempt < 1 || previous.integratedCommitSha !== commit || previous.target !== policy.target) return false;
+  const legacyPolicy = {
+    version: policy.version,
+    target: policy.target,
+    idempotency: policy.idempotency,
+    command: policy.command,
+    targetProbe: policy.targetProbe,
+    timeoutMs: policy.timeoutMs,
+    environmentKeys: policy.environmentKeys,
+  };
+  const digest = createHash("sha256").update(JSON.stringify(legacyPolicy)).digest("hex");
+  const key = createHash("sha256").update(JSON.stringify([gitDirectory, commit, digest, policy.target])).digest("hex");
+  return previous.policyDigest === digest && previous.idempotencyKey === key;
 }
 
 async function readState(file) {
@@ -49,8 +72,10 @@ export async function finalizePostIntegration(input) {
   return withTargetLease(stateDirectory, targetKey, async (leaseSignal) => {
     const abortSignal = input.abortSignal ? AbortSignal.any([input.abortSignal, leaseSignal]) : leaseSignal;
     const previous = await readState(statePath);
-    if (previous && (previous.integratedCommitSha !== commit || previous.policyDigest !== policyDigest || previous.target !== policy.target || previous.idempotencyKey !== identity))
+    if (previous && (previous.integratedCommitSha !== commit || previous.policyDigest !== policyDigest || previous.target !== policy.target || previous.idempotencyKey !== identity)
+      && !completedLegacyReceipt(previous, gitDirectory, commit, policy)) {
       throw new Error("Post-integration identity drift requires reconciliation");
+    }
     if (previous?.status === "complete" || input.inspectOnly === true && previous)
       return previous;
     const evidence = { sourceIntegrated: true, integratedCommitSha: commit, policyDigest, target: policy.target, idempotencyKey: identity };
