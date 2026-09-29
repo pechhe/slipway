@@ -86,7 +86,7 @@ export function landingPreview(cwd?: string): Promise<{
   target: { changeId: string; commitId: string };
   stat: string;
 }>;
-export { cleanupLandedWorkspace } from "./workspace-lifecycle.mjs";
+export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs";
 export function acquireWorkspaceLock(
   context: WorkspaceContext,
   /** Explicit human takeover authorisation; a string records its reason. */

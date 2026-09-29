@@ -11,8 +11,9 @@ import {
   readWorkspaceMode,
   workspaceContext,
   writeWorkspaceMode,
+  provisionSpare,
+  readySpares,
 } from "../lib/peach-workspace.mjs";
-import { provisionSpare, readySpares } from "../lib/workspace-lifecycle.mjs";
 import { runReviewCommand } from "../github-reviews/index.ts";
 
 const [command, ...rest] = process.argv.slice(2);
