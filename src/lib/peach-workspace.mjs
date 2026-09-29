@@ -230,7 +230,7 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
       `Configured integration bookmark '${integrationBranch}' does not exist locally`,
     );
   }
-  return { current, integration, integrationBranch, configuration };
+  return { current, integration, integrationBranch, configuration, workspaces };
 }
 
 async function readConfiguration(root) {

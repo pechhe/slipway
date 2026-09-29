@@ -21,6 +21,8 @@ export interface WorkspaceContext {
     integrationBranch?: string;
     requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
   };
+  /** Every registered JJ workspace as parsed from `jj workspace list`. */
+  workspaces: Array<Pick<WorkspaceEntry, "name" | "root" | "changeId" | "commitId">>;
 }
 export class CommandError extends Error {}
 export function explicitIssueNumber(value?: string | null): number | null;
