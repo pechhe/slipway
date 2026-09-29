@@ -1,4 +1,5 @@
 import { buildExecutionTopology } from "@peach-pi/shared-types";
+import { workspaceTakeoverInstruction } from "./workspace-writer-lock.mjs";
 
 /** Native GitHub relationships plus exact integration proof, never a cached graph. */
 export async function assertIssueEligible(root, issueNumber, integrationBranch, run) {
@@ -160,7 +161,9 @@ export async function selectImplementationIssue(root, scopeNumber, branch, run, 
   for (const [issueNumber, workspace] of ownership) {
     reasons.push(`#${issueNumber} has a current writer in jj:${workspace.name}`);
   }
-  throw new Error(`No eligible child remains: ${reasons.join("; ") || "current native ownership leaves no safe execution unit"}`);
+  const [ownedIssue] = ownership.keys();
+  const takeover = ownedIssue ? `. ${workspaceTakeoverInstruction({ issueNumber: ownedIssue })}` : "";
+  throw new Error(`No eligible child remains: ${reasons.join("; ") || "current native ownership leaves no safe execution unit"}${takeover}`);
 }
 
 /** A decomposed Epic keeps its lifecycle open when reconciling parent source. */

@@ -79,7 +79,8 @@ export function landingPreview(cwd?: string): Promise<{
 export function cleanupLandedWorkspace(cwd?: string): Promise<{ cleaned: boolean }>;
 export function acquireWorkspaceLock(
   context: WorkspaceContext,
-  options?: { takeOver?: boolean },
+  /** Explicit human takeover authorisation; a string records its reason. */
+  options?: { takeOver?: boolean | string },
 ): Promise<() => Promise<void>>;
 
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;

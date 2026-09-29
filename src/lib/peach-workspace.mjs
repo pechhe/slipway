@@ -2,7 +2,7 @@ import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
-import { workspaceWriterProcessAlive, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
+import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
 import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
@@ -82,41 +82,43 @@ export async function activeWorkspaceLock(workspaceName) {
   return null;
 }
 
+/** `takeOver` is the human's explicit authorisation (for example `--take-over`):
+ * the shared governed takeover moves writer ownership to this process first. */
 export async function acquireWorkspaceLock(context, options = {}) {
   if (!context || context.current.name === "default") return async () => {};
-  return withWorkspaceTransaction(`writer:${context.current.name}`, () => acquireWorkspaceLockUnlocked(context, options));
+  if (options.takeOver) {
+    await assertWorkspaceMutationAllowed(context);
+    await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
+    await takeOverWorkspaceWriter({
+      workspaceName: context.current.name, workspacePath: context.current.root, owner: { surface: "pi", pid: process.pid },
+      authorisation: { humanAuthorised: true, reason: typeof options.takeOver === "string" ? options.takeOver : "pi --take-over" },
+    });
+  }
+  return withWorkspaceTransaction(`writer:${context.current.name}`, () => acquireWorkspaceLockUnlocked(context));
 }
 
-async function acquireWorkspaceLockUnlocked(context, options) {
+async function acquireWorkspaceLockUnlocked(context) {
   if (!context || context.current.name === "default") return async () => {};
   await assertWorkspaceMutationAllowed(context);
   await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
   await mkdir(LOCK_HOME, { recursive: true, mode: 0o700 });
   const path = lockPath(context.current.name);
+  const releaseOwn = () => {
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      const current = await readJsonOptional(path);
+      if (current?.pid === process.pid) await rm(path, { force: true });
+    };
+  };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const active = await activeWorkspaceLock(context.current.name);
+    // This process already owns the writer (for example after a takeover).
+    if (active && !workspaceLandingWriterRefusal(active, [process.pid])) return releaseOwn();
     if (active) {
-      if (active.surface === "peach") {
-        throw new Error(
-          `jj:${context.current.name} is owned by Peach Pi (pid ${active.pid}). Close that Peach thread or stop the app first; vanilla Pi will not auto-terminate Peach.`,
-        );
-      }
-      if (!options.takeOver) {
-        throw new Error(
-          `jj:${context.current.name} is already owned by Pi process ${active.pid}. Stop it first or pass --take-over.`,
-        );
-      }
-      process.kill(active.pid, "SIGTERM");
-      for (let wait = 0; wait < 40; wait += 1) {
-        const owner = await readJsonOptional(path);
-        if (owner?.pid !== active.pid) break;
-        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
-      }
-      const owner = await readJsonOptional(path);
-      if (owner?.pid === active.pid && workspaceWriterProcessAlive(active.pid)) {
-        process.kill(active.pid, "SIGKILL");
-      }
-      await rm(path, { force: true });
+      const issueNumber = (await workspaceMetadata(context.current.name))?.issueNumber ?? null;
+      throw new Error(workspaceCurrentWriterRefusal({ workspaceName: context.current.name, issueNumber, lock: active }));
     }
     try {
       const handle = await open(path, "wx", 0o600);
@@ -134,13 +136,7 @@ async function acquireWorkspaceLockUnlocked(context, options) {
         ),
       );
       await handle.close();
-      let released = false;
-      return async () => {
-        if (released) return;
-        released = true;
-        const current = await readJsonOptional(path);
-        if (current?.pid === process.pid) await rm(path, { force: true });
-      };
+      return releaseOwn();
     } catch (error) {
       if (error?.code !== "EEXIST" || attempt > 0) throw error;
     }
@@ -858,10 +854,9 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
     }
     await assertWorkspaceMutationAllowed(context);
     const lock = await activeWorkspaceLock(context.current.name);
-    if (lock && (lock.surface === "peach" || lock.ownerAgentRunId || lock.revoking || ![process.pid, process.ppid].includes(lock.pid))) {
-      throw new Error("Workspace has another live owner; use the owning surface or governed takeover before landing");
-    }
-    const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context, {});
+    const refusal = workspaceLandingWriterRefusal(lock && { ...lock, workspaceName: context.current.name });
+    if (refusal) throw new Error(refusal);
+    const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
     try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
   });
   const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
@@ -1009,7 +1004,7 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
     return result.stdout;
   }, (candidateNumber) => findIssueWorkspace(context.integration.root, candidateNumber));
   const existing = issueNumber ? await findIssueWorkspace(cwd, issueNumber) : null;
-  if (existing?.lock) throw new Error(`Issue #${issueNumber} has a current writer in jj:${existing.name}`);
+  if (existing?.lock) throw new Error(workspaceCurrentWriterRefusal({ workspaceName: existing.name, issueNumber, lock: existing.lock }));
   return createWorkspace(task, context.integration.root, { issueNumber });
 }
 
