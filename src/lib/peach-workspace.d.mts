@@ -20,9 +20,8 @@ export interface WorkspaceContext {
   configuration: {
     integrationBranch?: string;
     requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
+    sourcePublication?: { version: 1; mode: "required"; remote: string } | null;
   };
-  /** Every registered JJ workspace as parsed from `jj workspace list`. */
-  workspaces: Array<Pick<WorkspaceEntry, "name" | "root" | "changeId" | "commitId">>;
 }
 export class CommandError extends Error {}
 export function explicitIssueNumber(value?: string | null): number | null;
@@ -56,6 +55,15 @@ export function removeWorkspace(
   workspaceName: string,
   options?: { allowWork?: boolean; allowIssue?: boolean },
 ): Promise<void>;
+/** Result of the push step that ends every landing. */
+export interface LandingPublication {
+  ok: boolean;
+  status: "pushed" | "push_failed" | "local_only" | "not_declared";
+  commitId: string;
+  remote?: string;
+  branch?: string;
+  reason?: string;
+}
 export function verificationFailureExcerpt(result: { stdout?: string; stderr?: string }): string;
 export function landWorkspace(cwd?: string, options?: {
   localOnly?: boolean;
@@ -67,7 +75,7 @@ export function landWorkspace(cwd?: string, options?: {
   onProgress?: (line: string) => void;
 }): Promise<{
   ok: boolean;
-  finalization: import("./workspace-finalization.mjs").WorkspaceFinalizationResult;
+  publication: LandingPublication;
   artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
   review: import("../delivery/review/index.ts").IndependentReviewOutcome;
   verification: import("./verification-policy.mjs").VerificationEvidence;
@@ -91,12 +99,6 @@ export function normalizeDeclaredVerification(value: unknown): WorkspaceContext[
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
 export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNumber?: number): ReturnType<typeof createWorkspace>;
 
-export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";
 export function workspaceContinuationState(
   context: WorkspaceContext | null,
 ): Promise<import("./workspace-delivery-lifecycle.mjs").WorkspaceContinuationDisposition>;
-export function reopenLandedWorkspace(cwd?: string): Promise<
-  | { reopened: false; reason: string; workspaceName: string; workspacePath: string }
-  | { reopened: true; workspaceName: string; workspacePath: string; landedArtifactCommitId: string;
-      integrationBranch: string; baseCommitId: string; reopenedAt: string }
->;

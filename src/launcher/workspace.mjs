@@ -5,12 +5,10 @@ import {
   cleanupLandedWorkspace,
   createWorkspace,
   landWorkspace,
-  finalizeIntegratedWorkspace,
   inspectWorkspaces,
   landingPreview,
   pruneEmptyWorkspaces,
   readWorkspaceMode,
-  reopenLandedWorkspace,
   workspaceContext,
   writeWorkspaceMode,
 } from "../lib/peach-workspace.mjs";
@@ -51,36 +49,19 @@ try {
     if (!task) throw new Error('Usage: peach-workspace start "task"');
     const result = await createWorkspace(task);
     console.log(result.workspacePath);
-  } else if (command === "reopen") {
-    console.log(JSON.stringify(await reopenLandedWorkspace(process.cwd()), null, 2));
   } else if (command === "preview") {
     const preview = await landingPreview();
     console.log(preview.stat || "(no changed files)");
   } else if (command === "land") {
     if (rest.some((flag) => flag !== "--local-only")) throw new Error("Usage: peach-workspace land [--local-only]");
     const result = await landWorkspace(process.cwd(), { localOnly: rest.includes("--local-only") ? true : undefined });
-    console.log(JSON.stringify({ artifact: result.artifact, finalization: result.finalization }, null, 2));
-    if (!result.ok) process.exitCode = 1;
-  } else if (command === "finalize") {
-    const commitIndex = rest.indexOf("--commit");
-    const expectedCommitSha = commitIndex >= 0 ? rest[commitIndex + 1] : undefined;
-    const flags = rest.filter((_value, index) => index !== commitIndex && index !== commitIndex + 1);
-    if (!/^[a-f0-9]{40}$/.test(expectedCommitSha ?? "")
-      || flags.some((flag) => !["--inspect", "--local-only", "--publish", "--recover-descendant"].includes(flag))
-      || flags.includes("--local-only") && flags.includes("--publish")) {
-      throw new Error("Usage: peach-workspace finalize --commit SHA [--inspect] [--local-only|--publish] [--recover-descendant]");
-    }
-    const result = await finalizeIntegratedWorkspace(process.cwd(), { expectedCommitSha,
-      inspectOnly: flags.includes("--inspect"),
-      recoverDescendant: flags.includes("--recover-descendant"),
-      localOnly: flags.includes("--local-only") ? true : flags.includes("--publish") ? false : undefined });
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "cleanup") {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${result.reason}.`);
   } else {
-    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|reopen|preview|land|finalize|cleanup|review>");
+    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|preview|land|cleanup|review>");
     process.exitCode = 2;
   }
 } catch (error) {

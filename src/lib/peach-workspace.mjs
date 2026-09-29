@@ -1,4 +1,3 @@
-import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
@@ -232,7 +231,7 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
       `Configured integration bookmark '${integrationBranch}' does not exist locally`,
     );
   }
-  return { current, integration, integrationBranch, configuration, workspaces };
+  return { current, integration, integrationBranch, configuration };
 }
 
 async function readConfiguration(root) {
@@ -240,13 +239,12 @@ async function readConfiguration(root) {
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
-  postIntegrationPolicy(parsed?.postIntegration);
-  sourcePublicationPolicy(parsed?.sourcePublication);
+  const sourcePublication = sourcePublicationPolicy(parsed?.sourcePublication);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
   const requiredLocalVerification = normalizeDeclaredVerification(checks);
   if (requiredLocalVerification.length !== checks.length) throw new Error("Malformed requiredLocalVerification entry");
-  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification };
+  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification, sourcePublication };
 }
 
 async function revisionExists(cwd, revision) {
@@ -535,7 +533,7 @@ export async function assertWorkspaceMutationAllowed(context) {
   const continuation = await workspaceContinuationState(context);
   if (["active", "resume_unfinished", "reopened"].includes(continuation.kind)) return;
   if (continuation.kind === "landed_source") {
-    throw new Error("This workspace source is already landed. New work opens a fresh workspace; reopen this one explicitly for same-task follow-up.");
+    throw new Error("This workspace source is already landed; make the follow-up change here and land again.");
   }
   throw new Error(`Historical landing evidence requires explicit recovery before mutation (${continuation.reason})`);
 }
@@ -851,10 +849,36 @@ async function ensureLandingDescription(cwd, context, target) {
   return revisionFacts(cwd, target.changeId);
 }
 
+/** The remote this landing publishes to, or null for local-only/undeclared delivery. */
+function publicationRemote(context, localOnly) {
+  return localOnly === true ? null : context.configuration.sourcePublication?.remote ?? null;
+}
+
+async function fetchIntegration(cwd, remote, branch) {
+  return run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { cwd });
+}
+
+/** Push the integration bookmark and confirm the remote-tracking bookmark contains the artifact. */
+async function publishIntegration(cwd, remote, branch, commitId) {
+  // A colocated import can leave the remote bookmark untracked; jj refuses to push it then.
+  await run("jj", ["--color=never", "bookmark", "track", `${branch}@${remote}`], { cwd });
+  const pushed = await run("jj", ["--color=never", "git", "push", "--remote", remote, "--bookmark", branch], { cwd });
+  if (pushed.code === 0 && await revisionExists(cwd, `${commitId} & ::${branch}@${remote}`)) {
+    return { ok: true, status: "pushed", remote, branch, commitId };
+  }
+  const detail = (pushed.stderr || pushed.stdout).trim();
+  return { ok: false, status: "push_failed", remote, branch, commitId,
+    reason: `Push of ${branch} to ${remote} failed${detail ? `: ${detail}` : ""}. The local integration is kept; rerun land to retry the push.` };
+}
+
+/** Landing is one operation: fetch → rebase → verify → move bookmark → push. */
 export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
   if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
+  const remote = publicationRemote(context, options.localOnly);
+  // Rebase onto the latest published integration; an offline fetch surfaces again at push.
+  if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
   const result = await withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
     const prior = await readJsonOptional(statePath(context.current.name));
     if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
@@ -870,11 +894,18 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
     const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
     try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
   });
-  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
-  const finalization = await finalizeIntegratedWorkspace(cwd, {
-    expectedCommitSha: result.artifact.commitId, localOnly: options.localOnly,
-  });
-  return { ...result, ok: finalization.ok, finalization };
+  const publication = remote
+    ? await publishIntegration(cwd, remote, context.integrationBranch, result.artifact.commitId)
+    : { ok: true, status: options.localOnly === true ? "local_only" : "not_declared", commitId: result.artifact.commitId };
+  return { ...result, ok: publication.ok, publication };
+}
+
+/** True when the landed artifact is on the declared remote, or when no publication applies. */
+async function artifactPublished(cwd, context, state) {
+  const remote = publicationRemote(context, state.localOnly);
+  if (!remote) return true;
+  await fetchIntegration(cwd, remote, context.integrationBranch);
+  return revisionExists(cwd, `${state.artifactCommitId} & ::${context.integrationBranch}@${remote}`);
 }
 
 async function landOwnedWorkspace(cwd, options) {
@@ -966,12 +997,7 @@ async function cleanupLandedWorkspaceUnlocked(cwd) {
   );
   if (!integrated)
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
-  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
-  const external = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId, inspectOnly: true });
-  if (!external.ok) {
-    const status = external.sourcePublication?.status ?? external.postIntegration?.status ?? "pending";
-    return { cleaned: false, reason: "delivery-finalization-" + status };
-  }
+  if (!await artifactPublished(cwd, context, state)) return { cleaned: false, reason: "not-published" };
   await jj(context.integration.root, ["workspace", "forget", context.current.name]);
   await rm(context.current.root, { recursive: true, force: true });
   await rm(statePath(context.current.name), { force: true });
@@ -994,9 +1020,7 @@ export async function assertWorkspaceDelivered(cwd) {
     || await workspaceHasUnintegratedWork(cwd, context.integrationBranch)) {
     throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
   }
-  const { finalizeIntegratedWorkspace } = await import("./workspace-finalization.mjs");
-  const finalization = await finalizeIntegratedWorkspace(cwd, { expectedCommitSha: state.artifactCommitId });
-  if (!finalization.ok) throw new Error("Source integrated; delivery finalization remains incomplete: " + (finalization.reason ?? "unknown"));
+  if (!await artifactPublished(cwd, context, state)) throw new Error("Source integrated locally but not yet pushed; rerun land before continuing");
   await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
     const result = await run(executable, args, { cwd: root });
     if (result.code !== 0) throw new Error(result.stderr || "Completion bookkeeping unavailable");
@@ -1018,8 +1042,5 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
   if (existing?.lock) throw new Error(workspaceCurrentWriterRefusal({ workspaceName: existing.name, issueNumber, lock: existing.lock }));
   return createWorkspace(task, context.integration.root, { issueNumber });
 }
-
-export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";
-export { reopenLandedWorkspace } from "./workspace-reopen.mjs";
 
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
