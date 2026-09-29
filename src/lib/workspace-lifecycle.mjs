@@ -98,6 +98,7 @@ export async function claimSpare(cwd, name) {
 const REPRODUCIBLE = new Set([
   ".jj", ".git", "node_modules", ".svelte-check", ".svelte-kit", ".wrangler", ".turbo", ".vite", ".cache",
   ".next", "dist", "build", "out", "coverage", "target", "DerivedData", ".DS_Store",
+  ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".vercel", ".astro", ".swc",
 ]);
 
 /**
