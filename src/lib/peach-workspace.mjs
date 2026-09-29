@@ -786,11 +786,13 @@ export function verificationFailureExcerpt(result) {
 
 const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`);
 
+const waitForLandingSlot = (onProgress = (line) => console.log(line)) => ({
+  onWait: () => onProgress("[verify] waiting for another landing's checks to finish"),
+});
+
 async function runVerification(context, onProgress = (line) => console.log(line)) {
-  // One landing verifies at a time on this machine; others queue here.
-  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), {
-    onWait: () => onProgress("[verify] waiting for another landing's checks to finish"),
-  });
+  // One landing verifies at a time on this machine; a landing already holds it.
+  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), waitForLandingSlot(onProgress));
 }
 
 async function runVerificationInSlot(context, onProgress) {
@@ -909,6 +911,12 @@ async function artifactPublished(cwd, context, state) {
 }
 
 async function landOwnedWorkspace(cwd, options) {
+  // Queue before rebasing: only the slot holder advances the integration branch,
+  // so the base this landing verifies is still current when it integrates.
+  return await withVerificationSlot(() => landOwnedWorkspaceInSlot(cwd, options), waitForLandingSlot(options.onProgress));
+}
+
+async function landOwnedWorkspaceInSlot(cwd, options) {
   const preview = await landingPreview(cwd);
   const { context } = preview;
   const target = await ensureLandingDescription(cwd, context, preview.target);

@@ -37,6 +37,37 @@ test("landing verifications on one machine run one at a time, in arrival order",
   }
 });
 
+test("a landing holding the slot runs its own verification without re-queueing, while others still wait", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-reentrant-"));
+  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
+  try {
+    const events: string[] = [];
+    let releaseLanding!: () => void;
+    const landingHeld = new Promise<void>((resolve) => { releaseLanding = resolve; });
+    let innerVerified!: () => void;
+    const verified = new Promise<void>((resolve) => { innerVerified = resolve; });
+    const landing = withVerificationSlot(async () => {
+      events.push("landing:rebase");
+      await withVerificationSlot(async () => { events.push("landing:verify"); }, { root, env, pollMs: 10 });
+      innerVerified();
+      await landingHeld;
+      events.push("landing:integrate");
+    }, { root, env, pollMs: 10 });
+    await verified;
+    let waited = false;
+    const other = withVerificationSlot(async () => { events.push("other:rebase"); }, {
+      root, env, pollMs: 10, onWait: () => { waited = true; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(waited, true);
+    releaseLanding();
+    await Promise.all([landing, other]);
+    assert.deepEqual(events, ["landing:rebase", "landing:verify", "landing:integrate", "other:rebase"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a landing started inside a held slot does not wait for its parent", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "verification-slot-nested-"));
   const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };

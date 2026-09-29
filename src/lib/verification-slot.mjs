@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,15 +14,21 @@ export function verificationSlotEnvironment(environment = process.env) {
   return { ...environment, [VERIFICATION_SLOT_ENV]: "held" };
 }
 
+// Marks the async flow that holds the slot, so a landing can hold it across
+// rebase, verification and integration while its inner verification call
+// passes straight through.
+const heldSlot = new AsyncLocalStorage();
+
 /**
- * Run one landing's required verification while holding the machine-wide
- * verification slot, so concurrent landings queue instead of starving each
- * other's timeouts. The lock lives under the user's Pi home and goes stale
+ * Run one landing while holding the machine-wide verification slot, so
+ * concurrent landings queue instead of starving each other's timeouts. A
+ * landing holds it from rebase through integration: verifying against a base
+ * that another landing advances meanwhile only earns a "bookmark moved" retry. The lock lives under the user's Pi home and goes stale
  * a minute after its holder dies.
  */
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
-  if (environment[VERIFICATION_SLOT_ENV] === "held") return await operation();
+  if (environment[VERIFICATION_SLOT_ENV] === "held" || heldSlot.getStore()) return await operation();
   const root = options.root ?? join(homedir(), ".pi", "agent", "workspace-state");
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = join(root, "verification-slot");
@@ -46,7 +53,7 @@ export async function withVerificationSlot(operation, options = {}) {
     }
   }
   try {
-    return await operation();
+    return await heldSlot.run(true, operation);
   } finally {
     await release().catch(() => {});
   }
