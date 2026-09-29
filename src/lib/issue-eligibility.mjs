@@ -10,12 +10,20 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
   const api = async (suffix, repo = repository) => JSON.parse(await run("gh", ["api", `repos/${repo}/${suffix}`, "--paginate", "--slurp"], root));
   const pages = await api(`issues/${issueNumber}/dependencies/blocked_by?per_page=100`);
   for (const dependency of pages.flat()) {
+    await assertCompletedIssueDelivered(root, dependency, repository, integrationBranch, run);
+  }
+}
+
+
+/** Shared native delivery proof for dependencies and accepted batch outcomes. */
+export async function assertCompletedIssueDelivered(root, dependency, repository, integrationBranch, run) {
+  const api = async (suffix, repo = repository) => JSON.parse(await run("gh", ["api", `repos/${repo}/${suffix}`, "--paginate", "--slurp"], root));
     const dependencyRepository = /\/repos\/([^/]+\/[^/]+)$/.exec(dependency.repository_url ?? "")?.[1]
       ?? /github\.com\/([^/]+\/[^/]+)\/issues\//.exec(dependency.html_url ?? "")?.[1]
       ?? repository;
     const reference = `${dependencyRepository}#${dependency.number}`;
     if (dependency.state !== "closed" || dependency.state_reason !== "completed") {
-      throw new Error(`Issue #${issueNumber} is blocked by ${reference}; only completed delivery can satisfy a prerequisite`);
+      throw new Error(`Delivery remains blocked by ${reference}; only completed delivery can satisfy a prerequisite`);
     }
     const sameRepository = dependencyRepository.toLowerCase() === repository.toLowerCase();
     const comments = (await api(`issues/${dependency.number}/comments?per_page=100`, dependencyRepository)).flat();
@@ -23,6 +31,7 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
       && /^Verification: passed(?:_with_gaps)?$/m.test(comment.body)
       && comment.body.includes(`<!-- peach-local-completion:${dependency.number}:`));
     let integrated = false;
+    let deliveredCommit = "";
     for (const receipt of receipts) {
       const commit = receipt.body.match(/^Integrated commit: `([a-f0-9]{40,64})`$/im)?.[1];
       if (!commit) continue;
@@ -30,7 +39,7 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
         const proof = await run("jj", ["--ignore-working-copy", "log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "");
         if (proof.trim() !== commit) continue;
         if (receipt.body.startsWith("Completed via Peach local integration.") && /^Delivery: local integration$/m.test(receipt.body)) {
-          integrated = true; break;
+          integrated = true; deliveredCommit = commit; break;
         }
       }
       // A foreign repository's commit must never be tested against this
@@ -41,20 +50,21 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) || ref.includes("..")) continue;
       const [remote] = (await api(`git/ref/heads/${encodeURIComponent(ref)}`, dependencyRepository)).flat();
       const observed = remote?.object?.sha;
-      if (observed === commit) { integrated = true; break; }
+      if (observed === commit) { integrated = true; deliveredCommit = commit; break; }
       if (!/^[a-f0-9]{40,64}$/i.test(observed ?? "")) continue;
       const [comparison] = (await api(`compare/${commit}...${observed}`, dependencyRepository)).flat();
-      if (comparison?.status === "ahead" && comparison.merge_base_commit?.sha === commit) { integrated = true; break; }
+      if (comparison?.status === "ahead" && comparison.merge_base_commit?.sha === commit) { integrated = true; deliveredCommit = commit; break; }
     }
     if (!integrated && sameRepository) {
       const closed = (await api(`issues/${dependency.number}/timeline?per_page=100`)).flat().filter((event) => event.event === "closed").at(-1);
       if (/^[a-f0-9]{40,64}$/i.test(closed?.commit_id ?? "")) {
         const commit = closed.commit_id;
         integrated = (await run("jj", ["--ignore-working-copy", "log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "")).trim() === commit;
+        if (integrated) deliveredCommit = commit;
       }
     }
-    if (!integrated) throw new Error(`${reference} is closed but its exact accepted source is not proven delivered; Issue #${issueNumber} remains blocked`);
-  }
+    if (!integrated) throw new Error(`${reference} is closed but its exact accepted source is not proven delivered`);
+    return `${reference}: completed delivery verified at ${deliveredCommit}`;
 }
 
 /** Resolve an authorized Issue/Epic against live GitHub state on every boundary.
@@ -175,7 +185,7 @@ export async function assertIssueReconciled(root, issueNumber, commit, run) {
   const decomposed = (issue?.labels ?? []).some((label) => (typeof label === "string" ? label : label.name) === "epic")
     && await issueHasChildDeliveryUnits(root, issueNumber, run);
   if ((!decomposed && issue?.state !== "closed") || !comments.some((comment) =>
-    comment.body?.startsWith(decomposed ? "Epic source reconciled via Peach local integration." : "Completed via Peach local integration.")
+    (decomposed ? comment.body?.startsWith("Epic source reconciled via Peach local integration.") : /^(?:Completed via Peach local integration\.|Completed via Peach GitHub source publication\.)/.test(comment.body ?? ""))
     && comment.body.includes(`<!-- peach-local-completion:${issueNumber}:`)
     && comment.body.includes("Verification: passed")
     && comment.body.includes("Integrated commit: `" + commit + "`"))) {

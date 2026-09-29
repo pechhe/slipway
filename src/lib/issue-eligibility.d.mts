@@ -7,3 +7,5 @@ export function selectImplementationIssue(root: string, scopeNumber: number | un
 export function assertIssueReconciled(root: string, issueNumber: number | undefined, commit: string, run: (executable: string, args: string[], cwd: string) => Promise<string>): Promise<void>;
 
 export function issueHasChildDeliveryUnits(root: string, issueNumber: number | undefined, run: (executable: string, args: string[], cwd: string) => Promise<string>): Promise<boolean>;
+
+export function assertCompletedIssueDelivered(root: string, issue: { number: number; state: string; state_reason?: string | null; repository_url?: string; html_url?: string }, repository: string, branch: string, run: (executable: string, args: string[], cwd: string) => Promise<string>): Promise<string>;

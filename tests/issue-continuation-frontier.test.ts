@@ -189,3 +189,14 @@ test("foreign dependencies use their repository publication proof, never equal l
   await assert.rejects(assertIssueEligible("/repo", 12, "main", run), /not proven delivered/);
   assert.ok(calls.every((call) => !call.includes("owner/repo/issues/11")));
 });
+
+test("published-source completion receipts permit exact native continuation", async () => {
+  const commit = "c".repeat(40);
+  const run = async (_executable: string, args: string[]) => {
+    if (args[0] === "git") return "origin https://github.com/owner/repo.git";
+    if (args[1]?.includes("comments")) return JSON.stringify([[{ body: `Completed via Peach GitHub source publication.\nIntegrated commit: \`${commit}\`\nVerification: passed\n<!-- peach-local-completion:12:example -->` }]]);
+    return JSON.stringify([[{ state: "closed", state_reason: "completed", labels: [] }]]);
+  };
+  await assertIssueReconciled("/repo", 12, commit, run);
+  await assert.rejects(assertIssueReconciled("/repo", 12, "d".repeat(40), run), /Reconcile/);
+});
