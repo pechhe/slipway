@@ -774,10 +774,26 @@ async function assertStackConflictFree(cwd, branch, changeId) {
     );
 }
 
-async function runVerification(context) {
+const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const FAILURE_EXCERPT_LINES = 60;
+
+// Verification output is evidence for a failure, not a live feed: inheriting the
+// terminal paints thousands of test lines over an embedding TUI such as Pi.
+export function verificationFailureExcerpt(result) {
+  const lines = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+    .replace(ANSI_ESCAPE, "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !/ExperimentalWarning|--trace-warnings/.test(line));
+  return lines.slice(-FAILURE_EXCERPT_LINES).join("\n");
+}
+
+const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`);
+
+async function runVerification(context, onProgress = (line) => console.log(line)) {
   const passed = [];
   const gaps = [];
-  for (const check of context.configuration.requiredLocalVerification) {
+  const checks = context.configuration.requiredLocalVerification;
+  for (const [index, check] of checks.entries()) {
     if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)) {
       throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
     }
@@ -792,16 +808,21 @@ async function runVerification(context) {
       if (availability.status === "failed") throw new Error(`Capability probe failed for ${check.capability.id}: ${availability.reason}`);
       if (availability.status === "unavailable") {
         const declared = `${check.executable} ${args.join(" ")}`.trim();
-        console.log(`\n[verify unavailable] ${check.capability.id}: ${availability.reason}`);
+        onProgress(`[verify ${index + 1}/${checks.length}] unavailable ${check.capability.id}: ${availability.reason}`);
         gaps.push(verificationGap(check.capability, declared, probeResult, availability.reason));
         continue;
       }
     }
-    console.log(`\n[verify] ${check.executable} ${args.join(" ")}`);
-    const result = await run(check.executable, args, { cwd, inherit: true });
-    if (result.code !== 0)
-      throw new Error(`Required verification failed: ${check.executable} ${args.join(" ")}`);
-    passed.push(`${check.executable} ${args.join(" ")}`.trim());
+    const declared = `${check.executable} ${args.join(" ")}`.trim();
+    onProgress(`[verify ${index + 1}/${checks.length}] ${declared}`);
+    const started = Date.now();
+    const result = await run(check.executable, args, { cwd });
+    if (result.code !== 0) {
+      const excerpt = verificationFailureExcerpt(result);
+      throw new Error(`Required verification failed: ${declared}${excerpt ? `\n${excerpt}` : ""}`);
+    }
+    onProgress(`[verify ${index + 1}/${checks.length}] passed in ${formatDuration(Date.now() - started)}`);
+    passed.push(declared);
   }
   return verificationEvidence(passed, gaps, context.configuration.requiredLocalVerification);
 }
@@ -855,7 +876,7 @@ async function landOwnedWorkspace(cwd, options) {
   const { context } = preview;
   const target = await ensureLandingDescription(cwd, context, preview.target);
   await assertDefaultReady(context);
-  await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch], { inherit: true });
+  await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch]);
   await assertStackConflictFree(cwd, context.integrationBranch, target.changeId);
   const base = await revisionFacts(cwd, context.integrationBranch);
   const candidate = await revisionFacts(cwd, target.changeId);
@@ -882,7 +903,7 @@ async function landOwnedWorkspace(cwd, options) {
     requesterIdentity: options.requesterIdentity, implementationSessionFile: options.implementationSessionFile,
     runReview: options.runReview };
   await recordIndependentReviewRequest(exact, reviewOptions);
-  const verification = await runVerification(context);
+  const verification = await runVerification(context, options.onProgress);
   exact.verification = verificationReviewEvidence(verification);
   await assertIdentity();
   const review = await evaluateIndependentReview(exact, reviewOptions);
@@ -895,13 +916,13 @@ async function landOwnedWorkspace(cwd, options) {
     await assertIdentity();
     await assertDefaultReady(context);
     await writeLandingState(context, candidate, review, verification, "prepared", options.localOnly);
-    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId], { inherit: true });
+    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId]);
     await writeLandingState(context, candidate, review, verification, "landed", options.localOnly);
     await completeIndependentReview(exact, reviewOptions);
-    await jj(context.integration.root, ["new", context.integrationBranch], { inherit: true });
+    await jj(context.integration.root, ["new", context.integrationBranch]);
   });
   const currentAfter = await revisionFacts(cwd, "@");
-  if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch], { inherit: true });
+  if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch]);
   return { context, artifact: candidate, review, verification };
 }
 

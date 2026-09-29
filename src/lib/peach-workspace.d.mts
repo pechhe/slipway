@@ -54,12 +54,15 @@ export function removeWorkspace(
   workspaceName: string,
   options?: { allowWork?: boolean; allowIssue?: boolean },
 ): Promise<void>;
+export function verificationFailureExcerpt(result: { stdout?: string; stderr?: string }): string;
 export function landWorkspace(cwd?: string, options?: {
   localOnly?: boolean;
   independentReview?: boolean;
   independentReviewWaiver?: import("../delivery/review/index.ts").IndependentReviewWaiver;
   requesterIdentity?: string; implementationSessionFile?: string;
   runReview?: import("./independent-review-policy.mjs").ReviewPolicyOptions["runReview"];
+  /** Receives one concise line per verification step; defaults to stdout. */
+  onProgress?: (line: string) => void;
 }): Promise<{
   ok: boolean;
   finalization: import("./workspace-finalization.mjs").WorkspaceFinalizationResult;
