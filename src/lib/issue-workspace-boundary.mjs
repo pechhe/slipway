@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,13 +43,21 @@ export async function assertIssueWorkspaceBoundary(root, issueNumber, workspaceN
   // Bound file I/O without caching authority or starting a process per record.
   // Preserve traversal order and inspect every batch, including retained history.
   const metadataFiles = files.filter((name) => name.endsWith(".json"));
+  let registered = null;
+  const isRegistered = async (name) => {
+    registered ??= new Set((await run("jj", ["workspace", "list", "-T", 'name ++ "\\n"'], root)).split("\n").filter(Boolean));
+    return registered.has(name);
+  };
   for (let offset = 0; offset < metadataFiles.length; offset += 32) {
     const batch = await Promise.all(metadataFiles.slice(offset, offset + 32)
       .map((file) => optionalJson(join(stateRoot, "workspaces", file))));
     for (const metadata of batch) {
       if (!metadata || metadata.workspaceName === workspaceName || !metadata.issueNumber
         || typeof metadata.integrationRoot !== "string" || resolve(metadata.integrationRoot) !== resolve(root)) continue;
-      if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
+      if (!existsSync(metadata.workspacePath ?? "")) {
+        // A record whose checkout and JJ registration are both gone holds no source.
+        if (!await isRegistered(metadata.workspaceName)) continue;
+      } else if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
       const related = metadata.issueNumber === issueNumber || requestedChildren.has(metadata.issueNumber)
         || (await descendants(metadata.issueNumber)).has(issueNumber);
       if (!related) continue;
