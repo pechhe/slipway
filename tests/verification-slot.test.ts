@@ -81,3 +81,32 @@ test("a landing started inside a held slot does not wait for its parent", async 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a waiting landing reports how many landings are ahead and who holds the slot", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-ahead-"));
+  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
+  const until = async (condition: () => boolean) => {
+    while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5));
+  };
+  try {
+    let releaseHolder!: () => void;
+    const holderHeld = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let holding = false;
+    const holder = withVerificationSlot(async () => { holding = true; await holderHeld; }, { root, env, pollMs: 10, label: "jj:holder" });
+    await until(() => holding);
+    const firstStatuses: Array<{ ahead: number; holder: string | null }> = [];
+    const secondStatuses: Array<{ ahead: number; holder: string | null }> = [];
+    const first = withVerificationSlot(async () => {}, { root, env, pollMs: 10, label: "jj:first", onWait: (status) => firstStatuses.push(status) });
+    await until(() => firstStatuses.length > 0);
+    const second = withVerificationSlot(async () => {}, { root, env, pollMs: 10, label: "jj:second", onWait: (status) => secondStatuses.push(status) });
+    await until(() => secondStatuses.length > 0);
+    assert.deepEqual(firstStatuses[0], { ahead: 1, holder: "jj:holder" });
+    assert.deepEqual(secondStatuses[0], { ahead: 2, holder: "jj:holder" });
+    releaseHolder();
+    await Promise.all([holder, first, second]);
+    // The slot is not first-come-first-served, so only the count shrinking is guaranteed.
+    assert.ok(secondStatuses.every((status, index) => index === 0 || status.ahead <= secondStatuses[index - 1]!.ahead));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

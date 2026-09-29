@@ -7,6 +7,8 @@ export function withVerificationSlot<T>(
     root?: string;
     pollMs?: number;
     signal?: AbortSignal;
-    onWait?: () => void;
+    /** This landing's name, shown to landings waiting behind it as `holder`. */
+    label?: string;
+    onWait?: (status: { ahead: number; holder: string | null }) => void;
   },
 ): Promise<T>;

@@ -65,7 +65,6 @@ export interface LandingPublication {
   branch?: string;
   reason?: string;
 }
-export function verificationFailureExcerpt(result: { stdout?: string; stderr?: string }): string;
 export type LandingTailOptions = {
   localOnly?: boolean;
   /** Human approval for an `explicit-human` post-integration step; see post-integration-policy. */

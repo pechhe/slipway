@@ -1,6 +1,7 @@
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
+import { summarizeVerificationFailure } from "./verification-failure.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
@@ -751,28 +752,16 @@ async function assertStackConflictFree(cwd, branch, changeId) {
     );
 }
 
-const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-const FAILURE_EXCERPT_LINES = 60;
-
-// Verification output is evidence for a failure, not a live feed: inheriting the
-// terminal paints thousands of test lines over an embedding TUI such as Pi.
-export function verificationFailureExcerpt(result) {
-  const lines = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
-    .replace(ANSI_ESCAPE, "")
-    .split(/\r?\n/)
-    .filter((line) => line.trim() && !/ExperimentalWarning|--trace-warnings/.test(line));
-  return lines.slice(-FAILURE_EXCERPT_LINES).join("\n");
-}
-
 const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`);
 
-const waitForLandingSlot = (onProgress = (line) => console.log(line)) => ({
-  onWait: () => onProgress("[verify] waiting for another landing's checks to finish"),
+const waitForLandingSlot = (context, onProgress = (line) => console.log(line)) => ({
+  label: `jj:${context.current.name}`,
+  onWait: ({ ahead, holder }) => onProgress(`[verify] waiting for the verification slot: ${ahead} landing${ahead === 1 ? "" : "s"} ahead${holder ? ` (${holder} holds it)` : ""}`),
 });
 
 async function runVerification(context, onProgress = (line) => console.log(line)) {
   // One landing verifies at a time on this machine; a landing already holds it.
-  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), waitForLandingSlot(onProgress));
+  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), waitForLandingSlot(context, onProgress));
 }
 
 async function runVerificationInSlot(context, onProgress) {
@@ -805,8 +794,9 @@ async function runVerificationInSlot(context, onProgress) {
     const started = Date.now();
     const result = await run(check.executable, args, { cwd, env });
     if (result.code !== 0) {
-      const excerpt = verificationFailureExcerpt(result);
-      throw new Error(`Required verification failed: ${declared}${excerpt ? `\n${excerpt}` : ""}`);
+      // Verification output is evidence for a failure, not a live feed: inheriting the
+      // terminal paints thousands of test lines over an embedding TUI such as Pi.
+      throw new Error(`Required verification failed: ${declared} (exit ${result.code})\n${summarizeVerificationFailure(result)}`);
     }
     onProgress(`[verify ${index + 1}/${checks.length}] passed in ${formatDuration(Date.now() - started)}`);
     passed.push(declared);
@@ -862,7 +852,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const onProgress = options.onProgress ?? ((line) => console.log(line));
   // One landing at a time holds the machine-wide slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
-  return await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(onProgress));
+  return await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
 }
 
 async function landInSlot(cwd, context, remote, options) {
@@ -880,7 +870,7 @@ async function landInSlot(cwd, context, remote, options) {
     const refusal = workspaceLandingWriterRefusal(lock && { ...lock, workspaceName: context.current.name });
     if (refusal) throw new Error(refusal);
     const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
-    try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
+    try { return await landOwnedWorkspace(cwd, context, options); } finally { await release(); }
   });
   return { ...result, ...await completeLanding(cwd, context, result.artifact.commitId, options) };
 }
@@ -917,10 +907,10 @@ export async function artifactPublished(cwd, context, state) {
   return revisionExists(cwd, `${state.artifactCommitId} & ::${context.integrationBranch}@${remote}`);
 }
 
-async function landOwnedWorkspace(cwd, options) {
+async function landOwnedWorkspace(cwd, context, options) {
   // Queue before rebasing: only the slot holder advances the integration branch,
   // so the base this landing verifies is still current when it integrates.
-  return await withVerificationSlot(() => landOwnedWorkspaceInSlot(cwd, options), waitForLandingSlot(options.onProgress));
+  return await withVerificationSlot(() => landOwnedWorkspaceInSlot(cwd, options), waitForLandingSlot(context, options.onProgress));
 }
 
 async function landOwnedWorkspaceInSlot(cwd, options) {
