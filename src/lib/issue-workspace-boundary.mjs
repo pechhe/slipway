@@ -63,7 +63,7 @@ async function reconciledWorkspace(metadata, stateRoot, root, run) {
     ?? await optionalJson(join(stateRoot, "landed", name + ".json"));
   if (!state || state.verification !== "passed" || typeof state.integrationBranch !== "string") return false;
   const context = { current: { name, root: metadata.workspacePath }, integration: { root }, integrationBranch: state.integrationBranch };
-  if (cleanupRetentionReason(state, context, metadata, Infinity)) return false;
+  if (cleanupRetentionReason(state, context, metadata)) return false;
   // A retained writer or incomplete retirement still owns the old boundary.
   if (await optionalJson(join(stateRoot, "locks", name + ".json"))) return false;
   const proof = await run("jj", ["log", "--no-graph", "-r", `${state.artifactCommitId} & ::${state.integrationBranch}`, "-T", "commit_id"], root);

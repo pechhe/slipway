@@ -1,16 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-/** Durable retirement policy shared by Peach and vanilla Pi. Time is only a
- * prerequisite; callers must prove identity, ancestry and exclusive access. */
-export const WORKSPACE_CLEANUP_GRACE_MS = 24 * 60 * 60 * 1000;
-
+/** Retirement policy shared by Peach and vanilla Pi. There is no archive period:
+ * a delivered checkout is eligible at landing, once callers prove identity,
+ * ancestry, publication and exclusive access. */
 export function cleanupEligibleAt(landedAt) {
   const time = Date.parse(landedAt);
-  return Number.isFinite(time) ? new Date(time + WORKSPACE_CLEANUP_GRACE_MS).toISOString() : null;
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
-export function cleanupRetentionReason(state, context, metadata, now = Date.now()) {
+export function cleanupRetentionReason(state, context, metadata) {
   if (!state || state.phase !== "landed") return "not-landed";
   if (state.workspaceName !== context.current.name
     || state.workspacePath !== context.current.root
@@ -21,11 +20,6 @@ export function cleanupRetentionReason(state, context, metadata, now = Date.now(
     || (state.issueNumber ?? null) !== (metadata?.issueNumber ?? null)
     || (state.issueNumber && metadata?.implementationChangeId && metadata.implementationChangeId !== (state.workspaceImplementationChangeId ?? state.artifactChangeId))) return "identity-mismatch";
   if (state.recoveryNeeded || state.cleanupPending) return "recovery-needed";
-  if (metadata?.reopenedFromArtifactCommitId === state.artifactCommitId) return "reopened";
-  const minimum = cleanupEligibleAt(state.landedAt);
-  const due = state.cleanupEligibleAt ?? minimum;
-  if (!minimum || !Number.isFinite(Date.parse(due)) || Date.parse(due) < Date.parse(minimum)) return "invalid-cleanup-eligibility";
-  if (now < Date.parse(due)) return "grace-period";
   return null;
 }
 

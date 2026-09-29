@@ -1,11 +1,12 @@
 import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
-import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
+import { cleanupEligibleAt, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
 import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
+import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { evaluateIndependentReview, recordIndependentReviewRequest, completeIndependentReview } from "./independent-review-policy.mjs";
 import { spawn } from "node:child_process";
@@ -62,7 +63,7 @@ export async function writeWorkspaceMode(mode) {
   return mode;
 }
 
-function lockPath(workspaceName) {
+export function lockPath(workspaceName) {
   return join(LOCK_HOME, `${workspaceName}.json`);
 }
 
@@ -247,7 +248,7 @@ async function readConfiguration(root) {
   return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification, sourcePublication };
 }
 
-async function revisionExists(cwd, revision) {
+export async function revisionExists(cwd, revision) {
   const result = await run(
     "jj",
     ["--color=never", "--ignore-working-copy", "log", "-r", revision, "--no-graph", "-T", '"ok"'],
@@ -384,12 +385,7 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
     throw new Error(
       `jj:${workspaceName} is attached to Issue #${metadata.issueNumber}; explicit deletion confirmation is required`,
     );
-  await jj(context.integration.root, [
-    "--ignore-working-copy",
-    "workspace",
-    "forget",
-    workspaceName,
-  ]);
+  await jj(context.integration.root, ["--ignore-working-copy", "workspace", "forget", workspaceName]);
   await rm(workspaceRoot, { recursive: true, force: true });
   await rm(metadataPath(workspaceName), { force: true });
   await rm(statePath(workspaceName), { force: true });
@@ -405,6 +401,7 @@ export async function pruneEmptyWorkspaces(cwd = process.cwd()) {
       workspace.name === "default" ||
       workspace.hasWork ||
       workspace.metadata?.issueNumber ||
+      workspace.metadata?.spare ||
       workspace.lock
     )
       continue;
@@ -492,7 +489,7 @@ export async function projectPrefix(cwd = process.cwd()) {
   return slug(basename(context.integration.root), 24);
 }
 
-async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
+export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
   const output = await jj(workspaceRoot, [
     "log",
     "-r",
@@ -617,11 +614,11 @@ async function workspaceDependencyCommand(workspacePath) {
   throw new Error(`Workspace dependency provisioning does not support package manager '${packageManager}'.`);
 }
 
-export async function prepareWorkspaceDependencies(workspacePath) {
+export async function prepareWorkspaceDependencies(workspacePath, options = {}) {
   const dependencyCommand = await workspaceDependencyCommand(workspacePath);
   if (!dependencyCommand) return { state: "not_required", packageManager: null };
-  console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
-  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: true });
+  if (!options.quiet) console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
+  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: !options.quiet });
   if (result.code !== 0) {
     throw new Error(
       `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
@@ -666,35 +663,25 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   const project = slug(basename(context.integration.root), 24);
   const name = taskWorkspaceName(project, options.issueNumber);
   await assertIssueAvailable(cwd, options.issueNumber, name);
-  const workspacePath = join(WORKSPACE_HOME, name);
-  await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
-  await jj(cwd, [
-    "workspace",
-    "add",
-    "--name",
-    name,
-    "--revision",
-    context.integrationBranch,
-    workspacePath,
-  ]);
+  // A prepared spare is the fast path; otherwise provision synchronously. Never the primary.
+  const claimed = await claimSpare(cwd, name);
+  const workspacePath = claimed?.root ?? join(WORKSPACE_HOME, name);
+  if (!claimed) {
+    await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
+    await jj(cwd, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
+  }
   const created = await workspaceContext(workspacePath);
-  if (!created || created.current.name !== name)
+  if (!created || created.current.name !== (claimed?.name ?? name))
     throw new Error("Created workspace could not be verified");
   await writeWorkspaceTaskMetadata(created, task);
   if (options.issueNumber) await attachWorkspaceIssue(workspacePath, options.issueNumber);
   const readiness = await prepareWorkspaceDependencies(workspacePath);
-  return { ...created, created: true, reused: false, workspacePath, readiness };
+  return { ...created, created: true, reused: false, pooled: Boolean(claimed), workspacePath, readiness };
 }
 
 async function revisionFacts(cwd, revision) {
-  const output = await jj(cwd, [
-    "log",
-    "-r",
-    revision,
-    "--no-graph",
-    "-T",
-    'change_id ++ "\\t" ++ commit_id ++ "\\t" ++ empty ++ "\\t" ++ conflict ++ "\\t" ++ description.first_line() ++ "\\n"',
-  ]);
+  const output = await jj(cwd, ["log", "-r", revision, "--no-graph", "-T",
+    'change_id ++ "\\t" ++ commit_id ++ "\\t" ++ empty ++ "\\t" ++ conflict ++ "\\t" ++ description.first_line() ++ "\\n"']);
   const [changeId, commitId, empty, conflict, description = ""] = output.split("\t");
   return {
     changeId,
@@ -717,7 +704,7 @@ async function assertDefaultReady(context) {
   return facts;
 }
 
-function statePath(workspaceName) {
+export function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
@@ -745,14 +732,7 @@ export async function landingPreview(cwd = process.cwd()) {
   const targetRevision = current.empty ? "@-" : "@";
   const target = await revisionFacts(cwd, targetRevision);
   if (target.conflict) throw new Error("The landing artifact has conflicts");
-  const stat = await jj(cwd, [
-    "diff",
-    "--from",
-    context.integrationBranch,
-    "--to",
-    targetRevision,
-    "--stat",
-  ]);
+  const stat = await jj(cwd, ["diff", "--from", context.integrationBranch, "--to", targetRevision, "--stat"]);
   return { context, targetRevision, target, stat };
 }
 
@@ -856,16 +836,16 @@ function publicationRemote(context, localOnly) {
   return localOnly === true ? null : context.configuration.sourcePublication?.remote ?? null;
 }
 
-async function fetchIntegration(cwd, remote, branch) {
-  return run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { cwd });
-}
+const fetchIntegration = (cwd, remote, branch) => run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { cwd });
 
 /** Push the integration bookmark and confirm the remote-tracking bookmark contains the artifact. */
 async function publishIntegration(cwd, remote, branch, commitId) {
   // A colocated import can leave the remote bookmark untracked; jj refuses to push it then.
   await run("jj", ["--color=never", "bookmark", "track", `${branch}@${remote}`], { cwd });
   const pushed = await run("jj", ["--color=never", "git", "push", "--remote", remote, "--bookmark", branch], { cwd });
-  if (pushed.code === 0 && await revisionExists(cwd, `${commitId} & ::${branch}@${remote}`)) {
+  // A remote that another landing already advanced past this artifact also counts.
+  if (pushed.code !== 0) await fetchIntegration(cwd, remote, branch);
+  if (await revisionExists(cwd, `${commitId} & ::${branch}@${remote}`)) {
     return { ok: true, status: "pushed", remote, branch, commitId };
   }
   const detail = (pushed.stderr || pushed.stdout).trim();
@@ -879,6 +859,13 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
   if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
   const remote = publicationRemote(context, options.localOnly);
+  const onProgress = options.onProgress ?? ((line) => console.log(line));
+  // One landing at a time holds the machine-wide slot from fetch through push, so
+  // the integration branch cannot move between this landing's rebase and bookmark.
+  return await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(onProgress));
+}
+
+async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
   const result = await withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
@@ -903,7 +890,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
 }
 
 /** True when the landed artifact is on the declared remote, or when no publication applies. */
-async function artifactPublished(cwd, context, state) {
+export async function artifactPublished(cwd, context, state) {
   const remote = publicationRemote(context, state.localOnly);
   if (!remote) return true;
   await fetchIntegration(cwd, remote, context.integrationBranch);
@@ -971,49 +958,6 @@ async function landOwnedWorkspaceInSlot(cwd, options) {
   return { context, artifact: candidate, review, verification };
 }
 
-export async function cleanupLandedWorkspace(cwd = process.cwd()) {
-  const context = await workspaceContext(cwd);
-  if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
-  return withWorkspaceTransaction(`writer:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd));
-}
-
-async function cleanupLandedWorkspaceUnlocked(cwd) {
-  const context = await workspaceContext(cwd);
-  if (!context || context.current.name === "default")
-    return { cleaned: false, reason: "not-isolated" };
-  let state;
-  try {
-    state = JSON.parse(await readFile(statePath(context.current.name), "utf8"));
-  } catch {
-    return { cleaned: false, reason: "not-landed" };
-  }
-  if (
-    resolve(state.workspacePath) !== resolve(context.current.root) ||
-    state.workspaceName !== context.current.name
-  ) {
-    throw new Error("Landing state does not match the current workspace");
-  }
-  if (await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch)) {
-    return { cleaned: false, reason: "new-unlanded-work" };
-  }
-  const retention = cleanupRetentionReason(state, context, await workspaceMetadata(context.current.name));
-  if (retention) return { cleaned: false, reason: retention };
-  if (await activeWorkspaceLock(context.current.name)) return { cleaned: false, reason: "writer-owned" };
-  const integrated = await revisionExists(
-    context.integration.root,
-    `${state.artifactCommitId} & ::${state.integrationBranch}`,
-  );
-  if (!integrated)
-    throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
-  if (!await artifactPublished(cwd, context, state)) return { cleaned: false, reason: "not-published" };
-  await jj(context.integration.root, ["workspace", "forget", context.current.name]);
-  await rm(context.current.root, { recursive: true, force: true });
-  await rm(statePath(context.current.name), { force: true });
-  await rm(metadataPath(context.current.name), { force: true });
-  await rm(lockPath(context.current.name), { force: true });
-  return { cleaned: true };
-}
-
 /** Exact source proof required before one session may leave its current Issue. */
 export async function assertWorkspaceDelivered(cwd) {
   const context = await workspaceContext(cwd);
@@ -1051,4 +995,5 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
   return createWorkspace(task, context.integration.root, { issueNumber });
 }
 
+export { cleanupLandedWorkspace } from "./workspace-lifecycle.mjs";
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";

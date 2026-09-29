@@ -12,6 +12,7 @@ import {
   workspaceContext,
   writeWorkspaceMode,
 } from "../lib/peach-workspace.mjs";
+import { provisionSpare, readySpares } from "../lib/workspace-lifecycle.mjs";
 import { runReviewCommand } from "../github-reviews/index.ts";
 
 const [command, ...rest] = process.argv.slice(2);
@@ -31,7 +32,8 @@ try {
     for (const workspace of await inspectWorkspaces()) {
       const issue = workspace.metadata?.issueNumber ? ` · issue #${workspace.metadata.issueNumber}` : "";
       const owner = workspace.lock ? ` · active pid ${workspace.lock.pid}` : "";
-      const state = workspace.name === "default" ? "integration" : workspace.hasWork ? "unlanded" : "empty";
+      const state = workspace.name === "default" ? "integration" : workspace.metadata?.spare ? "spare"
+        : workspace.hasWork ? "unlanded" : workspace.landed ? "landed" : "empty";
       console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${owner}`);
     }
   } else if (command === "prune") {
@@ -40,6 +42,12 @@ try {
     for (const name of result.removed) console.log(`Removed empty workspace: ${name}`);
     for (const skipped of result.skipped) console.error(`Skipped ${skipped.name}: ${skipped.reason}`);
     if (result.removed.length === 0 && result.skipped.length === 0) console.log("No empty unowned workspaces to prune.");
+  } else if (command === "pool") {
+    if (rest[0] === "refill") console.log(JSON.stringify(await provisionSpare(), null, 2));
+    else if (rest.length === 0) {
+      const spares = await readySpares(process.cwd());
+      console.log(spares.length ? spares.map((spare) => `ready\t${spare.name}\t${spare.root}`).join("\n") : "No ready spare workspace.");
+    } else throw new Error("Usage: peach-workspace pool [refill]");
   } else if (command === "attach-issue") {
     const issueNumber = Number(rest[0]);
     const result = await attachWorkspaceIssue(process.cwd(), issueNumber);
@@ -61,7 +69,7 @@ try {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${result.reason}.`);
   } else {
-    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|preview|land|cleanup|review>");
+    console.error("Usage: peach-workspace <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|cleanup|review>");
     process.exitCode = 2;
   }
 } catch (error) {
