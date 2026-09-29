@@ -102,3 +102,5 @@ export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNum
 export function workspaceContinuationState(
   context: WorkspaceContext | null,
 ): Promise<import("./workspace-delivery-lifecycle.mjs").WorkspaceContinuationDisposition>;
+
+export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
