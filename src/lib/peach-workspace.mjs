@@ -4,6 +4,7 @@ import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposi
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
+import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
 import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
 import { randomUUID } from "node:crypto";
@@ -707,6 +708,7 @@ async function revisionFacts(cwd, revision) {
 }
 
 async function assertDefaultReady(context) {
+  await assertNoForeignPrimaryWriter(context.integration.root);
   const facts = await revisionFacts(context.integration.root, "@");
   if (facts.conflict)
     throw new Error("Canonical checkout has conflicts; preserving both workspaces");
