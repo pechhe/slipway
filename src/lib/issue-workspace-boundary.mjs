@@ -39,15 +39,21 @@ export async function assertIssueWorkspaceBoundary(root, issueNumber, workspaceN
     if (error.code === "ENOENT") return [];
     throw error;
   });
-  for (const file of files.filter((name) => name.endsWith(".json"))) {
-    const metadata = await optionalJson(join(stateRoot, "workspaces", file));
-    if (!metadata || metadata.workspaceName === workspaceName || !metadata.issueNumber
-      || typeof metadata.integrationRoot !== "string" || resolve(metadata.integrationRoot) !== resolve(root)) continue;
-    if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
-    const related = metadata.issueNumber === issueNumber || requestedChildren.has(metadata.issueNumber)
-      || (await descendants(metadata.issueNumber)).has(issueNumber);
-    if (!related) continue;
-    throw new Error(`Issue #${issueNumber} overlaps preserved workspace jj:${metadata.workspaceName} for #${metadata.issueNumber}; reconcile that workspace through governed delivery/recovery before acquiring source authority. Its work has been preserved.`);
+  // Bound file I/O without caching authority or starting a process per record.
+  // Preserve traversal order and inspect every batch, including retained history.
+  const metadataFiles = files.filter((name) => name.endsWith(".json"));
+  for (let offset = 0; offset < metadataFiles.length; offset += 32) {
+    const batch = await Promise.all(metadataFiles.slice(offset, offset + 32)
+      .map((file) => optionalJson(join(stateRoot, "workspaces", file))));
+    for (const metadata of batch) {
+      if (!metadata || metadata.workspaceName === workspaceName || !metadata.issueNumber
+        || typeof metadata.integrationRoot !== "string" || resolve(metadata.integrationRoot) !== resolve(root)) continue;
+      if (await reconciledWorkspace(metadata, stateRoot, root, run)) continue;
+      const related = metadata.issueNumber === issueNumber || requestedChildren.has(metadata.issueNumber)
+        || (await descendants(metadata.issueNumber)).has(issueNumber);
+      if (!related) continue;
+      throw new Error(`Issue #${issueNumber} overlaps preserved workspace jj:${metadata.workspaceName} for #${metadata.issueNumber}; reconcile that workspace through governed delivery/recovery before acquiring source authority. Its work has been preserved.`);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { assertIssueReconciled, selectImplementationIssue } from "../src/lib/issue-eligibility.mjs";
+import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "../src/lib/issue-eligibility.mjs";
 
 test("Epic selection refreshes child readiness and dependency receipts on every transition", async () => {
   let landed = false;
@@ -12,10 +12,10 @@ test("Epic selection refreshes child readiness and dependency receipts on every 
     const url = args[1]!;
     if (url.endsWith("issues/10")) return JSON.stringify([{ number: 10, state: "open", labels: ["epic"] }]);
     if (url.includes("/sub_issues") && !url.includes("/10/")) return "[[]]";
-    if (url.includes("/sub_issues")) return JSON.stringify([[{ number: 11, state: landed ? "closed" : "open" }, { number: 12, state: "open" }]]);
+    if (url.includes("/sub_issues")) return JSON.stringify([[{ number: 11, state: landed ? "closed" : "open", state_reason: landed ? "completed" : null }, { number: 12, state: "open" }]]);
     if (url.endsWith("issues/11")) return JSON.stringify([{ number: 11, state: landed ? "closed" : "open", labels: ["ready-for-agent"] }]);
     if (url.endsWith("issues/12")) return JSON.stringify([{ number: 12, state: "open", labels: ["ready-for-agent"] }]);
-    if (url.includes("/dependencies/blocked_by")) return JSON.stringify([url.includes("/12/") ? [{ number: 11, state: landed ? "closed" : "open" }] : []]);
+    if (url.includes("/dependencies/blocked_by")) return JSON.stringify([url.includes("/12/") ? [{ number: 11, state: landed ? "closed" : "open", state_reason: landed ? "completed" : null }] : []]);
     if (url.includes("/comments")) return JSON.stringify([[{ body: `Completed via Peach local integration.\nVerification: passed\nDelivery: local integration\nIntegrated commit: \`${commit}\`\n<!-- peach-local-completion:11:${commit} -->` }]]);
     throw new Error(url);
   };
@@ -160,4 +160,32 @@ test("a writer acquired during frontier refresh does not strand an available sib
   };
   assert.equal(await selectImplementationIssue("/repo", 10, "main", run, readWorkspace), 12);
   assert.deepEqual(read, [11, 12, 11, 12]);
+});
+
+
+test("not-planned prerequisites never become satisfied through an old commit receipt", async () => {
+  const run = async (command: string) => command === "jj" ? "origin https://github.com/owner/repo.git" : JSON.stringify([[{ number: 11, state: "closed", state_reason: "not_planned" }]]);
+  await assert.rejects(assertIssueEligible("/repo", 12, "main", run), /only completed delivery/);
+});
+
+test("foreign dependencies use their repository publication proof, never equal local Issue numbers", async () => {
+  const commit = "a".repeat(40);
+  let published = true;
+  const calls: string[] = [];
+  const receipt = `Completed via Peach GitHub source publication.\nIntegrated commit: \`${commit}\`\nVerification: passed\nDelivery: git remote publication\nSource publication: complete; remote=origin; ref=develop; target=${commit}; observed=${commit}; coverage=exact\n<!-- peach-local-completion:11:receipt -->`;
+  const run = async (command: string, args: string[]) => {
+    calls.push(`${command} ${args.join(" ")}`);
+    if (command === "jj" && args[0] === "git") return "origin https://github.com/owner/repo.git";
+    if (command === "jj") throw new Error("Foreign source cannot be verified in local ancestry");
+    const route = args[1]!;
+    if (route.includes("owner/repo/issues/12/dependencies")) return JSON.stringify([[{ number: 11, repository_url: "https://api.github.com/repos/owner/other", state: "closed", state_reason: "completed" }]]);
+    if (route.includes("owner/other/issues/11/comments")) return JSON.stringify([[{ body: receipt }]]);
+    if (route === "repos/owner/other/git/ref/heads/develop") return JSON.stringify([{ object: { sha: published ? commit : "b".repeat(40) } }]);
+    if (route.startsWith("repos/owner/other/compare/")) return JSON.stringify([{ status: "diverged", merge_base_commit: { sha: "c".repeat(40) } }]);
+    throw new Error(`Unexpected identity ${route}`);
+  };
+  await assertIssueEligible("/repo", 12, "main", run);
+  published = false;
+  await assert.rejects(assertIssueEligible("/repo", 12, "main", run), /not proven delivered/);
+  assert.ok(calls.every((call) => !call.includes("owner/repo/issues/11")));
 });

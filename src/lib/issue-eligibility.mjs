@@ -7,28 +7,53 @@ export async function assertIssueEligible(root, issueNumber, integrationBranch, 
   const repository = remote.match(/(?:github\.com[:/])([^\s]+?)(?:\.git)?(?:\s|$)/)?.[1];
   // Local repositories without a GitHub remote have no GitHub work graph.
   if (!repository) return;
-  const api = async (suffix) => JSON.parse(await run("gh", ["api", `repos/${repository}/${suffix}`, "--paginate", "--slurp"], root));
+  const api = async (suffix, repo = repository) => JSON.parse(await run("gh", ["api", `repos/${repo}/${suffix}`, "--paginate", "--slurp"], root));
   const pages = await api(`issues/${issueNumber}/dependencies/blocked_by?per_page=100`);
   for (const dependency of pages.flat()) {
-    if (dependency.state !== "closed") throw new Error(`Issue #${issueNumber} is blocked by #${dependency.number}; implementation cannot start before it lands`);
-    const comments = (await api(`issues/${dependency.number}/comments?per_page=100`)).flat();
-    const commits = comments.filter((comment) => comment.body?.startsWith("Completed via Peach local integration.") && comment.body.includes("Verification: passed") && comment.body.includes("Delivery: local integration") && comment.body.includes(`<!-- peach-local-completion:${dependency.number}:`))
-      .map((comment) => comment.body.match(/Integrated commit: `([a-f0-9]{40,64})`/i)?.[1]).filter(Boolean);
-    let integrated = false;
-    for (const commit of commits) {
-      const proof = await run("jj", ["log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "");
-      if (proof.trim() === commit) { integrated = true; break; }
+    const dependencyRepository = /\/repos\/([^/]+\/[^/]+)$/.exec(dependency.repository_url ?? "")?.[1]
+      ?? /github\.com\/([^/]+\/[^/]+)\/issues\//.exec(dependency.html_url ?? "")?.[1]
+      ?? repository;
+    const reference = `${dependencyRepository}#${dependency.number}`;
+    if (dependency.state !== "closed" || dependency.state_reason !== "completed") {
+      throw new Error(`Issue #${issueNumber} is blocked by ${reference}; only completed delivery can satisfy a prerequisite`);
     }
-    if (!integrated) {
-      // Compatibility with the explicit PR endpoint: GitHub's closing event
-      // may name the integrating commit even when there is no local receipt.
+    const sameRepository = dependencyRepository.toLowerCase() === repository.toLowerCase();
+    const comments = (await api(`issues/${dependency.number}/comments?per_page=100`, dependencyRepository)).flat();
+    const receipts = comments.filter((comment) => /^(?:Completed via Peach local integration\.|Completed via Peach GitHub source publication\.)/.test(comment.body ?? "")
+      && /^Verification: passed(?:_with_gaps)?$/m.test(comment.body)
+      && comment.body.includes(`<!-- peach-local-completion:${dependency.number}:`));
+    let integrated = false;
+    for (const receipt of receipts) {
+      const commit = receipt.body.match(/^Integrated commit: `([a-f0-9]{40,64})`$/im)?.[1];
+      if (!commit) continue;
+      if (sameRepository) {
+        const proof = await run("jj", ["--ignore-working-copy", "log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "");
+        if (proof.trim() !== commit) continue;
+        if (receipt.body.startsWith("Completed via Peach local integration.") && /^Delivery: local integration$/m.test(receipt.body)) {
+          integrated = true; break;
+        }
+      }
+      // A foreign repository's commit must never be tested against this
+      // checkout's ancestry or confused with an equal local Issue number.
+      const publication = receipt.body.match(/^Source publication: complete; remote=[^;\n]+; ref=([^;\n]+); target=([a-f0-9]{40,64}); observed=[a-f0-9]{40,64}; coverage=(?:exact|descendant)$/im);
+      if (!publication || publication[2] !== commit || !/^Delivery: git remote publication$/m.test(receipt.body)) continue;
+      const ref = publication[1];
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) || ref.includes("..")) continue;
+      const [remote] = (await api(`git/ref/heads/${encodeURIComponent(ref)}`, dependencyRepository)).flat();
+      const observed = remote?.object?.sha;
+      if (observed === commit) { integrated = true; break; }
+      if (!/^[a-f0-9]{40,64}$/i.test(observed ?? "")) continue;
+      const [comparison] = (await api(`compare/${commit}...${observed}`, dependencyRepository)).flat();
+      if (comparison?.status === "ahead" && comparison.merge_base_commit?.sha === commit) { integrated = true; break; }
+    }
+    if (!integrated && sameRepository) {
       const closed = (await api(`issues/${dependency.number}/timeline?per_page=100`)).flat().filter((event) => event.event === "closed").at(-1);
       if (/^[a-f0-9]{40,64}$/i.test(closed?.commit_id ?? "")) {
         const commit = closed.commit_id;
-        integrated = (await run("jj", ["log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "")).trim() === commit;
+        integrated = (await run("jj", ["--ignore-working-copy", "log", "--no-graph", "-r", `${commit} & ::${integrationBranch}`, "-T", "commit_id"], root).catch(() => "")).trim() === commit;
       }
     }
-    if (!integrated) throw new Error(`Issue #${dependency.number} is closed but its exact accepted change is not proven landed in ${integrationBranch}; Issue #${issueNumber} remains blocked`);
+    if (!integrated) throw new Error(`${reference} is closed but its exact accepted source is not proven delivered; Issue #${issueNumber} remains blocked`);
   }
 }
 
