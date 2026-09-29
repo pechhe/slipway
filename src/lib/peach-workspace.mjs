@@ -2,6 +2,7 @@ import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
+import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
 import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
@@ -148,7 +149,7 @@ export async function run(command, args, options = {}) {
   return await new Promise((resolveRun, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -786,6 +787,14 @@ export function verificationFailureExcerpt(result) {
 const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`);
 
 async function runVerification(context, onProgress = (line) => console.log(line)) {
+  // One landing verifies at a time on this machine; others queue here.
+  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), {
+    onWait: () => onProgress("[verify] waiting for another landing's checks to finish"),
+  });
+}
+
+async function runVerificationInSlot(context, onProgress) {
+  const env = verificationSlotEnvironment();
   const passed = [];
   const gaps = [];
   const checks = context.configuration.requiredLocalVerification;
@@ -799,7 +808,7 @@ async function runVerification(context, onProgress = (line) => console.log(line)
     if (check.capability) {
       const probe = check.capability.probe;
       const probeCwd = typeof probe.cwd === "string" ? join(context.current.root, probe.cwd) : context.current.root;
-      const probeResult = await run(probe.executable, probe.args, { cwd: probeCwd });
+      const probeResult = await run(probe.executable, probe.args, { cwd: probeCwd, env });
       const availability = classifyCapabilityProbe(check.capability, probeResult);
       if (availability.status === "failed") throw new Error(`Capability probe failed for ${check.capability.id}: ${availability.reason}`);
       if (availability.status === "unavailable") {
@@ -812,7 +821,7 @@ async function runVerification(context, onProgress = (line) => console.log(line)
     const declared = `${check.executable} ${args.join(" ")}`.trim();
     onProgress(`[verify ${index + 1}/${checks.length}] ${declared}`);
     const started = Date.now();
-    const result = await run(check.executable, args, { cwd });
+    const result = await run(check.executable, args, { cwd, env });
     if (result.code !== 0) {
       const excerpt = verificationFailureExcerpt(result);
       throw new Error(`Required verification failed: ${declared}${excerpt ? `\n${excerpt}` : ""}`);
