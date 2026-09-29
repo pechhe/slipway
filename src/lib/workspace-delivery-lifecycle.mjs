@@ -21,6 +21,7 @@ export function cleanupRetentionReason(state, context, metadata, now = Date.now(
     || (state.issueNumber ?? null) !== (metadata?.issueNumber ?? null)
     || (state.issueNumber && metadata?.implementationChangeId && metadata.implementationChangeId !== (state.workspaceImplementationChangeId ?? state.artifactChangeId))) return "identity-mismatch";
   if (state.recoveryNeeded || state.cleanupPending) return "recovery-needed";
+  if (metadata?.reopenedFromArtifactCommitId === state.artifactCommitId) return "reopened";
   const minimum = cleanupEligibleAt(state.landedAt);
   const due = state.cleanupEligibleAt ?? minimum;
   if (!minimum || !Number.isFinite(Date.parse(due)) || Date.parse(due) < Date.parse(minimum)) return "invalid-cleanup-eligibility";
@@ -32,8 +33,9 @@ export function cleanupRetentionReason(state, context, metadata, now = Date.now(
  * Decide whether a historical landing still retires this workspace. A prior
  * receipt remains immutable history. New source may continue only when the
  * same workspace and Issue still own it, the exact landed artifact remains
- * integrated, and later unintegrated source is now present. Writer ownership
- * remains a separate authority check.
+ * integrated, and later unintegrated source is now present, or the owner has
+ * explicitly reopened this exact landed artifact for same-task follow-up.
+ * Writer ownership remains a separate authority check.
  */
 export function workspaceContinuationDisposition(state, evidence) {
   if (!state || state.phase !== "landed") return { kind: "active" };
@@ -52,6 +54,9 @@ export function workspaceContinuationDisposition(state, evidence) {
   }
   if (evidence.hasUnintegratedWork) {
     return { kind: "resume_unfinished", artifactCommitId: state.artifactCommitId };
+  }
+  if (evidence.reopenedArtifactCommitId && evidence.reopenedArtifactCommitId === state.artifactCommitId) {
+    return { kind: "reopened", artifactCommitId: state.artifactCommitId };
   }
   return { kind: "landed_source", artifactCommitId: state.artifactCommitId };
 }

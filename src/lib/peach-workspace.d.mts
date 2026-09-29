@@ -86,3 +86,11 @@ export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, un
 export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNumber?: number): ReturnType<typeof createWorkspace>;
 
 export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";
+export function workspaceContinuationState(
+  context: WorkspaceContext | null,
+): Promise<import("./workspace-delivery-lifecycle.mjs").WorkspaceContinuationDisposition>;
+export function reopenLandedWorkspace(cwd?: string): Promise<
+  | { reopened: false; reason: string; workspaceName: string; workspacePath: string }
+  | { reopened: true; workspaceName: string; workspacePath: string; landedArtifactCommitId: string;
+      integrationBranch: string; baseCommitId: string; reopenedAt: string }
+>;

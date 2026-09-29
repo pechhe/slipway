@@ -44,12 +44,16 @@ export async function readIntegratedWorkspaceEvidence(cwd, expected) {
     'name ++ "\t" ++ root ++ "\t" ++ target.change_id() ++ "\t" ++ target.commit_id() ++ "\n"']));
   const current = workspaces.find((entry) => entry.root && resolve(entry.root) === resolve(root));
   if (!current) throw new Error("Current JJ workspace identity is missing");
-  const file = current.name === "default"
-    ? join(artifactDirectory, "artifact-" + publicationDigest([gitDirectory, expected]) + ".json")
-    : join(homedir(), ".pi", "agent", "workspace-state", current.name + ".json");
-  let state;
-  try { state = JSON.parse(await readFile(file, "utf8")); }
-  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  const archived = join(artifactDirectory, "artifact-" + publicationDigest([gitDirectory, expected]) + ".json");
+  const read = async (file) => {
+    try { return JSON.parse(await readFile(file, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  };
+  let state = await read(current.name === "default" ? archived
+    : join(homedir(), ".pi", "agent", "workspace-state", current.name + ".json"));
+  // A reopened workspace may have landed again; its earlier artifact stays archived.
+  if (current.name !== "default" && state && state.artifactCommitId !== expected) state = await read(archived) ?? state;
+  if (!state) return null;
   if (!state || !["prepared", "landed"].includes(state.phase) || state.artifactCommitId !== expected
     || typeof state.integrationBranch !== "string" || !["passed", "passed_with_gaps"].includes(state.verification)
     || (current.name !== "default" && (state.workspaceName !== current.name || state.workspacePath !== root))) {

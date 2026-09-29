@@ -277,11 +277,11 @@ function slug(value, limit = 40) {
   );
 }
 
-function metadataPath(workspaceName) {
+export function metadataPath(workspaceName) {
   return join(METADATA_HOME, `${workspaceName}.json`);
 }
 
-async function workspaceMetadata(workspaceName) {
+export async function workspaceMetadata(workspaceName) {
   return await readJsonOptional(metadataPath(workspaceName));
 }
 
@@ -524,6 +524,7 @@ export async function workspaceContinuationState(context) {
     integrationRoot: context.integration.root,
     integrationBranch: context.integrationBranch,
     issueNumber,
+    reopenedArtifactCommitId: metadata?.reopenedFromArtifactCommitId ?? null,
     hasUnintegratedWork: await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch),
     landedArtifactIntegrated: Boolean(
       state?.artifactCommitId
@@ -534,9 +535,9 @@ export async function workspaceContinuationState(context) {
 
 export async function assertWorkspaceMutationAllowed(context) {
   const continuation = await workspaceContinuationState(context);
-  if (continuation.kind === "active" || continuation.kind === "resume_unfinished") return;
+  if (["active", "resume_unfinished", "reopened"].includes(continuation.kind)) return;
   if (continuation.kind === "landed_source") {
-    throw new Error("This workspace source is already landed. Resume finalization or continue in another Issue workspace.");
+    throw new Error("This workspace source is already landed. New work opens a fresh workspace; reopen this one explicitly for same-task follow-up.");
   }
   throw new Error(`Historical landing evidence requires explicit recovery before mutation (${continuation.reason})`);
 }
@@ -992,5 +993,6 @@ export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
 }
 
 export { finalizeIntegratedWorkspace } from "./workspace-finalization.mjs";
+export { reopenLandedWorkspace } from "./workspace-reopen.mjs";
 
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";

@@ -10,6 +10,7 @@ import {
   landingPreview,
   pruneEmptyWorkspaces,
   readWorkspaceMode,
+  reopenLandedWorkspace,
   workspaceContext,
   writeWorkspaceMode,
 } from "../lib/peach-workspace.mjs";
@@ -50,6 +51,8 @@ try {
     if (!task) throw new Error('Usage: peach-workspace start "task"');
     const result = await createWorkspace(task);
     console.log(result.workspacePath);
+  } else if (command === "reopen") {
+    console.log(JSON.stringify(await reopenLandedWorkspace(process.cwd()), null, 2));
   } else if (command === "preview") {
     const preview = await landingPreview();
     console.log(preview.stat || "(no changed files)");
@@ -77,7 +80,7 @@ try {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${result.reason}.`);
   } else {
-    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|preview|land|finalize|cleanup|review>");
+    console.error("Usage: peach-workspace <status|mode|list|prune --empty|attach-issue|start|reopen|preview|land|finalize|cleanup|review>");
     process.exitCode = 2;
   }
 } catch (error) {

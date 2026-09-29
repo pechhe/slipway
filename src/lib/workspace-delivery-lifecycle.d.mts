@@ -4,13 +4,15 @@ export function assertWorkspaceNotRetired(workspaceName: string): Promise<void>;
 export type WorkspaceContinuationDisposition =
   | { kind: "active" }
   | { kind: "resume_unfinished"; artifactCommitId: string }
+  | { kind: "reopened"; artifactCommitId: string }
   | { kind: "landed_source"; artifactCommitId: string }
   | { kind: "recovery_required"; reason: string };
 export function workspaceContinuationDisposition(
   state: { phase?: string; workspaceName: string; workspacePath: string; integrationRoot?: string;
     integrationBranch: string; artifactCommitId: string; issueNumber?: number } | null,
   evidence: { workspaceName: string; workspacePath: string; integrationRoot: string; integrationBranch: string;
-    issueNumber: number | null; hasUnintegratedWork: boolean; landedArtifactIntegrated: boolean },
+    issueNumber: number | null; hasUnintegratedWork: boolean; landedArtifactIntegrated: boolean;
+    reopenedArtifactCommitId?: string | null },
 ): WorkspaceContinuationDisposition;
 export function cleanupRetentionReason(
   state: { phase?: string; workspaceName: string; workspacePath: string; integrationRoot?: string;
