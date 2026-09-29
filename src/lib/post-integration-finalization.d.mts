@@ -1,7 +1,7 @@
 export type PostIntegrationResult = {
   ok: boolean;
   sourceIntegrated: true;
-  status: "not_declared" | "approval_required" | "running" | "failed" | "complete";
+  status: "not_declared" | "approval_required" | "running" | "failed" | "complete" | "covered";
   integratedCommitSha: string;
   policyDigest?: string;
   target?: string;
@@ -9,6 +9,10 @@ export type PostIntegrationResult = {
   attempt?: number;
   approved?: true;
   authorization?: "human" | "repository-policy";
+  coverage?: "descendant";
+  coveredByCommitSha?: string;
+  coveredByPolicyDigest?: string;
+  priorFailure?: { attempt: number; reason: string };
   reason?: string;
 };
 
@@ -19,6 +23,7 @@ export type PostIntegrationInput = {
   approval?: unknown;
   inspectOnly?: boolean;
   abortSignal?: AbortSignal;
+  recoverDescendant?: boolean;
   /** Internal test/storage seam, never accepted from delivery tool input. */
   stateDirectory?: string;
   environment?: () => NodeJS.ProcessEnv;

@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import lockfile from "proper-lockfile";
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
@@ -11,16 +11,19 @@ import { finalizationCwd, readExactExecutionPolicy, readPostIntegrationPolicy, w
 
 class HistoricalMigrationFailure extends Error {}
 
-async function historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal) {
-  const tip = (await input.readIntegrationTip()).trim();
-  if (tip === commit) return;
-  if (!input.recoverDescendant || !/^[a-f0-9]{40}$/.test(tip))
-    throw new HistoricalMigrationFailure("Integration tip changed before finalization");
-  const ancestor = await runBoundedProcess({
-    executable: "git", args: ["--git-dir", gitDirectory, "merge-base", "--is-ancestor", commit, tip],
+async function isAncestor(gitDirectory, ancestorCommit, descendantCommit, environmentFactory, abortSignal) {
+  const result = await runBoundedProcess({
+    executable: "git", args: ["--git-dir", gitDirectory, "merge-base", "--is-ancestor", ancestorCommit, descendantCommit],
     cwd: gitDirectory, env: environmentFactory(), abortSignal, timeoutMs: 30000, maxOutputBytes: 1024,
   });
-  if (ancestor.exitCode !== 0 || ancestor.timedOut || ancestor.error || ancestor.signal || ancestor.stdoutTruncated || ancestor.stderrTruncated)
+  return result.exitCode === 0 && !result.timedOut && !result.error && !result.signal
+    && !result.stdoutTruncated && !result.stderrTruncated;
+}
+
+async function verifyHistoricalMigrationSpan(input, gitDirectory, commit, tip, policyDigest, environmentFactory, abortSignal) {
+  if (!input.recoverDescendant || !/^[a-f0-9]{40}$/.test(tip))
+    throw new HistoricalMigrationFailure("Integration tip changed before finalization");
+  if (!await isAncestor(gitDirectory, commit, tip, environmentFactory, abortSignal))
     throw new HistoricalMigrationFailure("Historical artifact is no longer in integration history");
   const [exact, live] = await Promise.all([
     readExactExecutionPolicy(gitDirectory, commit, environmentFactory),
@@ -54,6 +57,12 @@ async function historicalMigrationTip(input, gitDirectory, commit, policyDigest,
   });
   if (unchanged.exitCode !== 0 || unchanged.timedOut || unchanged.error || unchanged.signal || unchanged.stdoutTruncated || unchanged.stderrTruncated)
     throw new HistoricalMigrationFailure("Historical migration inputs changed after integration");
+}
+
+async function historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal) {
+  const tip = (await input.readIntegrationTip()).trim();
+  if (tip === commit) return;
+  await verifyHistoricalMigrationSpan(input, gitDirectory, commit, tip, policyDigest, environmentFactory, abortSignal);
 }
 // A separate external-target lease, not a long-held workspace identity transaction.
 function withTargetLease(directory, identity, operation) {
@@ -95,7 +104,8 @@ function completedLegacyReceipt(previous, gitDirectory, commit, policy) {
 async function readState(file) {
   try {
     const value = JSON.parse(await readFile(file, "utf8"));
-    if (!value || typeof value !== "object" || !["approval_required", "running", "failed", "complete"].includes(value.status) || value.sourceIntegrated !== true || !Number.isInteger(value.attempt) || value.attempt < 0 || value.ok !== (value.status === "complete"))
+    if (!value || typeof value !== "object" || !["approval_required", "running", "failed", "complete", "covered"].includes(value.status) || value.sourceIntegrated !== true || !Number.isInteger(value.attempt) || value.attempt < 0 || value.ok !== (["complete", "covered"].includes(value.status))
+      || value.status === "covered" && (value.coverage !== "descendant" || !/^[a-f0-9]{40}$/.test(value.coveredByCommitSha ?? "")))
       throw new Error("Invalid post-integration state");
     return value;
   } catch (error) {
@@ -103,6 +113,39 @@ async function readState(file) {
       return null;
     throw error;
   }
+}
+
+async function coveredByCompletedDescendant(input, gitDirectory, commit, policy, policyDigest, stateDirectory, environmentFactory, abortSignal) {
+  if (!input.recoverDescendant) return null;
+  // A completed later artifact proves this target only when its migration inputs
+  // still matched the older artifact. Drift after that completion is irrelevant.
+  const tip = (await input.readIntegrationTip()).trim();
+  if (tip === commit || !/^[a-f0-9]{40}$/.test(tip)
+    || !await isAncestor(gitDirectory, commit, tip, environmentFactory, abortSignal)) return null;
+  for (const entry of await readdir(stateDirectory, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const receipt = await readState(path.join(stateDirectory, entry.name));
+    const descendant = receipt?.integratedCommitSha;
+    if (receipt?.status !== "complete" || receipt.approved !== true || receipt.attempt < 1
+      || receipt.target !== policy.target || !/^[a-f0-9]{40}$/.test(descendant ?? "")
+      || descendant === commit || !await isAncestor(gitDirectory, descendant, tip, environmentFactory, abortSignal)) continue;
+    const candidate = await readPostIntegrationPolicy(gitDirectory, descendant, environmentFactory);
+    if (!candidate.policy || postIntegrationPolicyDigest(candidate.policy) !== policyDigest
+      || !(receipt.policyDigest === policyDigest
+        && receipt.idempotencyKey === createHash("sha256").update(JSON.stringify([gitDirectory, descendant, policyDigest, policy.target])).digest("hex")
+        || completedLegacyReceipt(receipt, gitDirectory, descendant, candidate.policy))) continue;
+    try {
+      await verifyHistoricalMigrationSpan(input, gitDirectory, commit, descendant, policyDigest, environmentFactory, abortSignal);
+    } catch (error) {
+      if (error instanceof HistoricalMigrationFailure) continue;
+      throw error;
+    }
+    const currentTip = (await input.readIntegrationTip()).trim();
+    if (!/^[a-f0-9]{40}$/.test(currentTip)
+      || !await isAncestor(gitDirectory, descendant, currentTip, environmentFactory, abortSignal)) return null;
+    return { coveredByCommitSha: descendant, coveredByPolicyDigest: receipt.policyDigest };
+  }
+  return null;
 }
 export async function finalizePostIntegration(input) {
   const commit = input.integratedCommitSha;
@@ -123,7 +166,7 @@ export async function finalizePostIntegration(input) {
       && !completedLegacyReceipt(previous, gitDirectory, commit, policy)) {
       throw new Error("Post-integration identity drift requires reconciliation");
     }
-    if (previous?.status === "complete" || input.inspectOnly === true && previous)
+    if (previous?.status === "complete" || previous?.status === "covered" || input.inspectOnly === true && previous)
       return previous;
     const evidence = { sourceIntegrated: true, integratedCommitSha: commit, policyDigest, target: policy.target, idempotencyKey: identity };
     const policyApproved = policy.approvalMode === "automatic-development";
@@ -146,6 +189,15 @@ export async function finalizePostIntegration(input) {
       approved: true,
       authorization: policyApproved ? "repository-policy" : previous?.authorization ?? "human"
     };
+    const coverage = await coveredByCompletedDescendant(input, gitDirectory, commit, policy, policyDigest,
+      stateDirectory, environmentFactory, abortSignal);
+    if (coverage) {
+      const covered = { ...accepted, ok: true, status: "covered", coverage: "descendant", ...coverage,
+        attempt: previous?.attempt ?? 0,
+        ...(previous?.status === "failed" ? { priorFailure: { attempt: previous.attempt, reason: previous.reason } } : {}) };
+      await writeWorkspaceJson(statePath, covered);
+      return covered;
+    }
     const attempt = (previous?.attempt ?? 0) + 1;
     await writeWorkspaceJson(statePath, { ...accepted, ok: false, status: "running", attempt });
     let reason = "Integration tip changed before finalization";
