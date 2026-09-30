@@ -13,7 +13,16 @@ import {
   writeWorkspaceMode,
   provisionSpare,
   readySpares,
+  describeRetention,
+  retainedWorkspaceMaterial,
 } from "../lib/peach-workspace.mjs";
+import { execFileSync } from "node:child_process";
+
+/** Disk use of a checkout, for spotting retained workspaces worth reclaiming. */
+function diskUsage(root) {
+  try { return execFileSync("du", ["-sh", root], { encoding: "utf8", timeout: 60_000 }).split("\t")[0]; }
+  catch { return "?"; }
+}
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -27,12 +36,18 @@ try {
     const requested = rest[0];
     console.log(requested ? await writeWorkspaceMode(requested) : await readWorkspaceMode());
   } else if (command === "list") {
+    const context = await workspaceContext();
     for (const workspace of await inspectWorkspaces()) {
       const issue = workspace.metadata?.issueNumber ? ` · issue #${workspace.metadata.issueNumber}` : "";
       const owner = workspace.lock ? ` · active pid ${workspace.lock.pid}` : "";
       const state = workspace.name === "default" ? "integration" : workspace.metadata?.spare ? "spare"
         : workspace.hasWork ? "unlanded" : workspace.landed ? "landed" : "empty";
-      console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${owner}`);
+      // Landed checkouts should be gone; say why one is still here and what it costs.
+      const paths = state === "landed" && !workspace.lock && workspace.root && context
+        ? await retainedWorkspaceMaterial(workspace.root, context.integration.root).catch(() => [])
+        : [];
+      const kept = paths.length ? ` · ${diskUsage(workspace.root)} kept: ${describeRetention({ reason: "unique-files", paths })}` : "";
+      console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${owner}${kept}`);
     }
   } else if (command === "prune") {
     if (rest[0] !== "--empty") throw new Error("Usage: peach-workspace prune --empty");
@@ -65,7 +80,7 @@ try {
     if (!result.ok) process.exitCode = 1;
   } else if (command === "cleanup") {
     const result = await cleanupLandedWorkspace();
-    console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${result.reason}.`);
+    console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${describeRetention(result)}.`);
   } else {
     console.error("Usage: peach-workspace <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|cleanup>");
     process.exitCode = 2;

@@ -990,5 +990,5 @@ export async function prepareWorkspaceContinuation(task, cwd) {
   return createWorkspace(task, context.integration.root);
 }
 
-export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
+export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
