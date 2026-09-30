@@ -1,3 +1,4 @@
+import { integrateLandingCandidate, finishLanding } from "./landing-candidate.mjs";
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
@@ -728,10 +729,10 @@ export function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
-async function writeLandingState(context, artifact, verification, phase = "landed", localOnly) {
+async function writeLandingState(context, artifact, verification, phase = "landed", localOnly, operationId) {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
   await writeWorkspaceJson(statePath(context.current.name), {
-    version: 1, phase, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
+    version: 1, phase, operationId, cleanupPending: true, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
     integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
     artifactDescription: artifact.description, verification: verification.status,
@@ -865,7 +866,8 @@ async function publishIntegration(cwd, remote, branch, commitId) {
 /** Landing is one operation: fetch → rebase → verify → move bookmark → push. */
 export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
-  if (!context || context.current.name === "default") throw new Error("Landing requires an isolated jj workspace");
+  if (!context || (context.current.name === "default" && !options.allowDefaultWorkspace)) throw new Error("Landing requires an isolated jj workspace");
+  options.onStage?.("preparing");
   if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
   const remote = publicationRemote(context, options.localOnly);
   const onProgress = options.onProgress ?? ((line) => console.log(line));
@@ -877,20 +879,27 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
 async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
-  const result = await withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
+  // The host already holds its writer transaction at admission; vanilla owns it here.
+  const owned = async () => {
     const prior = await readJsonOptional(statePath(context.current.name));
     if (prior?.phase === "landed" && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
       && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
-      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId),
+      const cleanup = await finishLanding(context, prior, options, landingIO);
+      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), ...cleanup,
         verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
     }
+    if (context.current.name === "default") return landOwnedWorkspace(cwd, context, options);
     await assertWorkspaceMutationAllowed(context);
     const lock = await activeWorkspaceLock(context.current.name);
-    const refusal = workspaceLandingWriterRefusal(lock && { ...lock, workspaceName: context.current.name });
-    if (refusal) throw new Error(refusal);
+    if (options.adapter?.assertWriter) await options.adapter.assertWriter(lock);
+    else {
+      const refusal = workspaceLandingWriterRefusal(lock && { ...lock, workspaceName: context.current.name });
+      if (refusal) throw new Error(refusal);
+    }
     const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
     try { return await landOwnedWorkspace(cwd, context, options); } finally { await release(); }
-  });
+  };
+  const result = options.adapter ? await owned() : await withWorkspaceTransaction(`writer:${context.current.name}`, owned);
   return { ...result, ...await completeLanding(cwd, context, result.artifact.commitId, options) };
 }
 
@@ -932,37 +941,15 @@ async function landOwnedWorkspace(cwd, context, options) {
   return await withVerificationSlot(() => landOwnedWorkspaceInSlot(cwd, options), waitForLandingSlot(context, options.onProgress));
 }
 
-async function landOwnedWorkspaceInSlot(cwd, options) {
-  const preview = await landingPreview(cwd);
-  const { context } = preview;
-  const target = await ensureLandingDescription(cwd, context, preview.target);
-  await assertDefaultReady(context);
-  await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch]);
-  await assertStackConflictFree(cwd, context.integrationBranch, target.changeId);
-  const base = await revisionFacts(cwd, context.integrationBranch);
-  const candidate = await revisionFacts(cwd, target.changeId);
-  const assertIdentity = async () => {
-    const drift = await jj(cwd, ["diff", "--from", candidate.commitId, "--to", "@", "--summary"]);
-    if ((await revisionFacts(cwd, target.changeId)).commitId !== candidate.commitId || drift)
-      throw new Error("Verification checkout differs from the landing candidate; repair and rerun landing");
-    if ((await revisionFacts(cwd, context.integrationBranch)).commitId !== base.commitId)
-      throw new Error("Integration bookmark moved; rerun landing against the new base");
-  };
-  await assertIdentity();
-  const verification = await runVerification(context, options.onProgress);
-  await assertIdentity();
-  await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
-    await assertIdentity();
-    await assertDefaultReady(context);
-    await writeLandingState(context, candidate, verification, "prepared", options.localOnly);
-    await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId]);
-    await writeLandingState(context, candidate, verification, "landed", options.localOnly);
-    await jj(context.integration.root, ["new", context.integrationBranch]);
-  });
-  const currentAfter = await revisionFacts(cwd, "@");
-  if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch]);
-  return { context, artifact: candidate, verification };
+function landOwnedWorkspaceInSlot(cwd, options) {
+  return integrateLandingCandidate(cwd, options, landingIO);
 }
+
+const landingIO = {
+  landingPreview, ensureLandingDescription, assertDefaultReady, jj,
+  assertStackConflictFree, revisionFacts, runVerification, writeLandingState,
+  readJsonOptional, statePath,
+};
 
 /** Exact source proof (landed, pushed, nothing new) before a session leaves this workspace. */
 export async function assertWorkspaceDelivered(cwd) {

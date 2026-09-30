@@ -81,11 +81,26 @@ export type LandingTail = {
 export function artifactPublished(cwd: string, context: { integrationBranch: string; configuration: { remote?: string | null } }, state: { artifactCommitId: string; localOnly?: boolean }): Promise<boolean>;
 /** Declared post-integration step, then push, after the integration bookmark moved. */
 export function completeLanding(cwd: string, context: { integrationBranch: string; configuration: { remote?: string | null } }, commitId: string, options?: LandingTailOptions): Promise<LandingTail>;
+export type LandingRevision = { commitId: string; changeId: string; empty: boolean; conflict: boolean; description: string };
+/** Internal host seams, not accepted from tool input. They do not own landing order. */
+export type LandingAdapter = {
+  assertWriter?: (lock: (WorkspaceLock & { revoking?: boolean }) | null) => Promise<void>;
+  preview?: () => Promise<{ context: { current: { name: string; root: string }; integration: { name: string; root: string }; integrationBranch: string; configuration: { requiredLocalVerification: unknown[]; remote?: string | null } }; target: LandingRevision }>;
+  repairTarget?: (target: LandingRevision) => Promise<LandingRevision>;
+  finalizeCandidate?: (candidate: LandingRevision, base: LandingRevision) => Promise<LandingRevision>;
+  verify?: (identity: { base: string; candidate: string }) => Promise<import("./verification-policy.mjs").VerificationEvidence>;
+  finish?: (context: WorkspaceContext, state: Record<string, unknown>) => Promise<{ cleanupPending: boolean; cleanupError?: string }>;
+};
 export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
+  allowDefaultWorkspace?: boolean;
+  operationId?: string;
+  onStage?: (stage: "preparing" | "rebasing" | "verifying" | "integrating" | "cleaning") => void;
+  adapter?: LandingAdapter;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
 }): Promise<LandingTail & {
-  artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
+  artifact: LandingRevision; context: WorkspaceContext;
+  cleanupPending?: boolean; cleanupError?: string;
   verification: import("./verification-policy.mjs").VerificationEvidence;
 }>;
 export function landingPreview(cwd?: string): Promise<{
