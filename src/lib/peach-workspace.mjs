@@ -14,7 +14,7 @@ import { describePostLandFailure, latestPostLandResult, postLandChecks, startPos
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap } from "./verification-policy.mjs";
+import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, runVerificationStages, verificationEvidence, verificationGap } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -692,16 +692,15 @@ async function runVerification(context, onProgress = (line) => console.log(line)
 
 async function runVerificationInSlot(context, onProgress) {
   const env = verificationSlotEnvironment();
-  const passed = [];
-  const gaps = [];
   const checks = context.configuration.requiredLocalVerification;
-  for (const [index, check] of checks.entries()) {
+  const outcomes = await runVerificationStages(checks, async (check, index) => {
     if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)) {
       throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
     }
     const args = check.args.map((value) => String(value));
     const cwd =
       typeof check.cwd === "string" ? join(context.current.root, check.cwd) : context.current.root;
+    const declared = `${check.executable} ${args.join(" ")}`.trim();
     if (check.capability) {
       const probe = check.capability.probe;
       const probeCwd = typeof probe.cwd === "string" ? join(context.current.root, probe.cwd) : context.current.root;
@@ -709,13 +708,10 @@ async function runVerificationInSlot(context, onProgress) {
       const availability = classifyCapabilityProbe(check.capability, probeResult);
       if (availability.status === "failed") throw new Error(`Capability probe failed for ${check.capability.id}: ${availability.reason}`);
       if (availability.status === "unavailable") {
-        const declared = `${check.executable} ${args.join(" ")}`.trim();
         onProgress(`[verify ${index + 1}/${checks.length}] unavailable ${check.capability.id}: ${availability.reason}`);
-        gaps.push(verificationGap(check.capability, declared, probeResult, availability.reason));
-        continue;
+        return { gap: verificationGap(check.capability, declared, probeResult, availability.reason) };
       }
     }
-    const declared = `${check.executable} ${args.join(" ")}`.trim();
     onProgress(`[verify ${index + 1}/${checks.length}] ${declared}`);
     const started = Date.now();
     const result = await run(check.executable, args, { cwd, env });
@@ -725,8 +721,10 @@ async function runVerificationInSlot(context, onProgress) {
       throw new Error(`Required verification failed: ${declared} (exit ${result.code})\n${summarizeVerificationFailure(result)}`);
     }
     onProgress(`[verify ${index + 1}/${checks.length}] passed in ${formatDuration(Date.now() - started)}`);
-    passed.push(declared);
-  }
+    return { passed: declared };
+  });
+  const passed = outcomes.flatMap((outcome) => outcome.passed ? [outcome.passed] : []);
+  const gaps = outcomes.flatMap((outcome) => outcome.gap ? [outcome.gap] : []);
   return verificationEvidence(passed, gaps, context.configuration.requiredLocalVerification);
 }
 

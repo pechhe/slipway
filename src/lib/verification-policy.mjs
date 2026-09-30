@@ -8,8 +8,32 @@ const command = (value, field) => {
     throw new Error(`Malformed ${field} command`);
   }
   return { executable: value.executable, args: [...value.args], ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
-    ...(value.baseline && typeof value.baseline === "object" ? { baseline: value.baseline } : {}) };
+    ...(value.baseline && typeof value.baseline === "object" ? { baseline: value.baseline } : {}),
+    ...(value.concurrent === true ? { concurrent: true } : {}) };
 };
+
+/**
+ * Run declared checks in order, except that consecutive `concurrent` checks run
+ * together. Outcomes keep declaration order; the first failure in that order is
+ * thrown once its group has settled, so no check is left running.
+ */
+export async function runVerificationStages(checks, verify) {
+  const stages = [];
+  checks.forEach((check, index) => {
+    const last = stages.at(-1);
+    if (check?.concurrent === true && last && checks[last[0]]?.concurrent === true) last.push(index);
+    else stages.push([index]);
+  });
+  const outcomes = [];
+  for (const stage of stages) {
+    const settled = await Promise.allSettled(stage.map((index) => verify(checks[index], index)));
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+      outcomes.push(result.value);
+    }
+  }
+  return outcomes;
+}
 
 export function normalizeVerificationDeclaration(value, field = "requiredLocalVerification") {
   const base = command(value, field);

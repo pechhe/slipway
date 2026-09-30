@@ -1,4 +1,6 @@
-export type VerificationCommand = { executable: string; args: string[]; cwd?: string; baseline?: unknown };
+export type VerificationCommand = { executable: string; args: string[]; cwd?: string; baseline?: unknown; concurrent?: boolean };
+/** Declared order, with consecutive `concurrent` checks run together; outcomes keep declaration order. */
+export function runVerificationStages<Check, Outcome>(checks: readonly Check[], verify: (check: Check, index: number) => Promise<Outcome>): Promise<Outcome[]>;
 export type CapabilityDeclaration = {
   id: string;
   probe: VerificationCommand;
