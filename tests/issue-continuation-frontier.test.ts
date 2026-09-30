@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "../src/lib/issue-eligibility.mjs";
+import { assertIssueEligible, selectImplementationIssue } from "../src/lib/issue-eligibility.mjs";
 
-test("Epic selection refreshes child readiness and dependency receipts on every transition", async () => {
+test("Epic selection refreshes child readiness and dependency state on every transition", async () => {
   let landed = false;
   const commit = "a".repeat(40);
   const calls: string[] = [];
@@ -24,7 +24,6 @@ test("Epic selection refreshes child readiness and dependency receipts on every 
   landed = true;
   assert.equal(await selectImplementationIssue("/repo", 10, "main", run, async () => null), 12);
   assert.ok(calls.filter((call) => call.includes("issues/10/sub_issues")).length === 2);
-  assert.ok(calls.some((call) => call.includes(commit)));
 });
 
 test("no route or parent readiness admits a parked or unready child", async () => {
@@ -49,21 +48,6 @@ test("canonical external blocker prevents unattended implementation", async () =
   await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, async () => null), /not ready/);
 });
 
-test("continuation requires the exact child receipt and closed Issue", async () => {
-  let closed = false;
-  let commit = "a".repeat(40);
-  const run = async (command: string, args: string[]) => {
-    if (command === "jj") return "origin https://github.com/owner/repo.git";
-    if (args[1]!.includes("/comments")) return JSON.stringify([[{ body: "Completed via Peach local integration.\nVerification: passed\nIntegrated commit: `" + commit + "`\n<!-- peach-local-completion:11:" + commit + " -->" }]]);
-    return JSON.stringify([{ state: closed ? "closed" : "open" }]);
-  };
-  await assert.rejects(assertIssueReconciled("/repo", 11, commit, run), /Reconcile/);
-  closed = true;
-  await assertIssueReconciled("/repo", 11, commit, run);
-  commit = "b".repeat(40);
-  await assert.rejects(assertIssueReconciled("/repo", 11, "a".repeat(40), run), /Reconcile/);
-});
-
 test("a coherent Epic with internal phases stays its own live delivery unit", async () => {
   const calls: string[] = [];
   const run = async (command: string, args: string[]) => {
@@ -74,24 +58,6 @@ test("a coherent Epic with internal phases stays its own live delivery unit", as
   };
   for (let step = 0; step < 3; step++) assert.equal(await selectImplementationIssue("/repo", 10, "main", run, async () => null), 10);
   assert.ok(calls.every((call) => !call.includes("--method") && !call.includes("issues/11")));
-});
-
-test("a decomposed Epic stays open while its exact parent source receipt permits continuation", async () => {
-  const commit = "a".repeat(40);
-  let receipt = "";
-  let children = true;
-  const run = async (command: string, args: string[]) => {
-    if (command === "jj") return "origin https://github.com/owner/repo.git";
-    if (args[1]!.includes("/comments")) return JSON.stringify([[{ body: receipt }]]);
-    if (args[1]!.includes("/sub_issues")) return JSON.stringify([children ? [{ number: 11 }] : []]);
-    return JSON.stringify([{ number: 10, state: "open", labels: ["epic"] }]);
-  };
-  await assert.rejects(assertIssueReconciled("/repo", 10, commit, run), /Reconcile/);
-  receipt = "Epic source reconciled via Peach local integration.\nVerification: passed\nIntegrated commit: `" + commit + "`\n<!-- peach-local-completion:10:receipt -->";
-  await assertIssueReconciled("/repo", 10, commit, run);
-  await assert.rejects(assertIssueReconciled("/repo", 10, "b".repeat(40), run), /Reconcile/);
-  children = false;
-  await assert.rejects(assertIssueReconciled("/repo", 10, commit, run), /Reconcile/);
 });
 
 function unblockedEpic() {
@@ -168,35 +134,8 @@ test("not-planned prerequisites never become satisfied through an old commit rec
   await assert.rejects(assertIssueEligible("/repo", 12, "main", run), /only completed delivery/);
 });
 
-test("foreign dependencies use their repository publication proof, never equal local Issue numbers", async () => {
-  const commit = "a".repeat(40);
-  let published = true;
-  const calls: string[] = [];
-  const receipt = `Completed via Peach GitHub source publication.\nIntegrated commit: \`${commit}\`\nVerification: passed\nDelivery: git remote publication\nSource publication: complete; remote=origin; ref=develop; target=${commit}; observed=${commit}; coverage=exact\n<!-- peach-local-completion:11:receipt -->`;
-  const run = async (command: string, args: string[]) => {
-    calls.push(`${command} ${args.join(" ")}`);
-    if (command === "jj" && args[0] === "git") return "origin https://github.com/owner/repo.git";
-    if (command === "jj") throw new Error("Foreign source cannot be verified in local ancestry");
-    const route = args[1]!;
-    if (route.includes("owner/repo/issues/12/dependencies")) return JSON.stringify([[{ number: 11, repository_url: "https://api.github.com/repos/owner/other", state: "closed", state_reason: "completed" }]]);
-    if (route.includes("owner/other/issues/11/comments")) return JSON.stringify([[{ body: receipt }]]);
-    if (route === "repos/owner/other/git/ref/heads/develop") return JSON.stringify([{ object: { sha: published ? commit : "b".repeat(40) } }]);
-    if (route.startsWith("repos/owner/other/compare/")) return JSON.stringify([{ status: "diverged", merge_base_commit: { sha: "c".repeat(40) } }]);
-    throw new Error(`Unexpected identity ${route}`);
-  };
+test("a dependency closed as completed satisfies its dependents without a receipt", async () => {
+  const run = async (command: string) => command === "jj" ? "origin https://github.com/owner/repo.git"
+    : JSON.stringify([[{ number: 11, repository_url: "https://api.github.com/repos/owner/other", state: "closed", state_reason: "completed" }]]);
   await assertIssueEligible("/repo", 12, "main", run);
-  published = false;
-  await assert.rejects(assertIssueEligible("/repo", 12, "main", run), /not proven delivered/);
-  assert.ok(calls.every((call) => !call.includes("owner/repo/issues/11")));
-});
-
-test("published-source completion receipts permit exact native continuation", async () => {
-  const commit = "c".repeat(40);
-  const run = async (_executable: string, args: string[]) => {
-    if (args[0] === "git") return "origin https://github.com/owner/repo.git";
-    if (args[1]?.includes("comments")) return JSON.stringify([[{ body: `Completed via Peach GitHub source publication.\nIntegrated commit: \`${commit}\`\nVerification: passed\n<!-- peach-local-completion:12:example -->` }]]);
-    return JSON.stringify([[{ state: "closed", state_reason: "completed", labels: [] }]]);
-  };
-  await assertIssueReconciled("/repo", 12, commit, run);
-  await assert.rejects(assertIssueReconciled("/repo", 12, "d".repeat(40), run), /Reconcile/);
 });

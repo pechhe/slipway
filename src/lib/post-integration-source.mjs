@@ -67,10 +67,9 @@ export async function readExactExecutionPolicy(selectedGitDirectory, commit, env
   const listed = (await finalizationGit(gitDirectory, ["ls-tree", "--name-only", commit, "--", ".peach/execution.json"], environment)).trim();
   if (!listed) return { gitDirectory, configuration: null };
   const configuration = JSON.parse(await finalizationGit(gitDirectory, ["show", `${commit}:.peach/execution.json`], environment));
-  const legacyLocalOnly = configuration?.version === undefined
-    && configuration?.postIntegration === undefined && configuration?.sourcePublication === undefined;
+  // Only a declared external-state step needs a versioned policy.
   if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)
-    || (!legacyLocalOnly && configuration.version !== 1)) {
+    || (configuration.postIntegration !== undefined && configuration.version !== 1)) {
     throw new Error("Integrated source has an invalid execution policy");
   }
   return { gitDirectory, configuration };

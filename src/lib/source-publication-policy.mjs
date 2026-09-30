@@ -1,16 +1,12 @@
-import { createHash } from "node:crypto";
+const REMOTE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-export function sourcePublicationPolicy(value) {
+/** The remote `land` pushes the integration branch to: the top-level `remote`,
+ * or the older `sourcePublication.remote` form other repositories still declare. */
+export function declaredPublicationRemote(policy) {
+  const value = policy?.remote ?? policy?.sourcePublication?.remote;
   if (value === undefined) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => !["version", "mode", "remote"].includes(key))
-    || value.version !== 1 || value.mode !== "required"
-    || typeof value.remote !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value.remote)) {
-    throw new Error("Invalid source publication policy: expected version 1, required mode and one named remote");
+  if (typeof value !== "string" || !REMOTE.test(value)) {
+    throw new Error("Invalid publication remote in .peach/execution.json: expected one named remote");
   }
-  return { version: 1, mode: "required", remote: value.remote };
-}
-
-export function sourcePublicationPolicyDigest(policy) {
-  return createHash("sha256").update(JSON.stringify(policy)).digest("hex");
+  return value;
 }

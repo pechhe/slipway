@@ -20,7 +20,8 @@ export interface WorkspaceContext {
   configuration: {
     integrationBranch?: string;
     requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
-    sourcePublication?: { version: 1; mode: "required"; remote: string } | null;
+    /** Remote the integration branch is pushed to after landing; null when undeclared. */
+    remote?: string | null;
   };
 }
 export class CommandError extends Error {}
@@ -58,26 +59,33 @@ export function removeWorkspace(
 /** Result of the push step that ends every landing. */
 export interface LandingPublication {
   ok: boolean;
-  status: "pushed" | "push_failed" | "local_only" | "not_declared";
+  status: "pushed" | "push_failed" | "local_only" | "not_declared" | "blocked";
   commitId: string;
   remote?: string;
   branch?: string;
   reason?: string;
 }
 export function verificationFailureExcerpt(result: { stdout?: string; stderr?: string }): string;
-export function landWorkspace(cwd?: string, options?: {
+export type LandingTailOptions = {
   localOnly?: boolean;
-  independentReview?: boolean;
-  independentReviewWaiver?: import("../delivery/review/index.ts").IndependentReviewWaiver;
-  requesterIdentity?: string; implementationSessionFile?: string;
-  runReview?: import("./independent-review-policy.mjs").ReviewPolicyOptions["runReview"];
+  /** Human approval for an `explicit-human` post-integration step; see post-integration-policy. */
+  postIntegrationApproval?: unknown;
+  environment?: () => NodeJS.ProcessEnv;
+};
+export type LandingTail = {
+  ok: boolean;
+  postIntegration: import("./post-integration-finalization.mjs").PostIntegrationResult;
+  publication: LandingPublication;
+};
+/** True when the landed artifact is on the declared remote, or no publication applies. */
+export function artifactPublished(cwd: string, context: { integrationBranch: string; configuration: { remote?: string | null } }, state: { artifactCommitId: string; localOnly?: boolean }): Promise<boolean>;
+/** Declared post-integration step, then push, after the integration bookmark moved. */
+export function completeLanding(cwd: string, context: { integrationBranch: string; configuration: { remote?: string | null } }, commitId: string, options?: LandingTailOptions): Promise<LandingTail>;
+export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
-}): Promise<{
-  ok: boolean;
-  publication: LandingPublication;
+}): Promise<LandingTail & {
   artifact: { commitId: string; changeId: string }; context: WorkspaceContext;
-  review: import("../delivery/review/index.ts").IndependentReviewOutcome;
   verification: import("./verification-policy.mjs").VerificationEvidence;
 }>;
 export function landingPreview(cwd?: string): Promise<{

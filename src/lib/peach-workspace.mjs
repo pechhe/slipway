@@ -1,19 +1,19 @@
-import { sourcePublicationPolicy } from "./source-publication-policy.mjs";
+import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
-import { assertIssueEligible, assertIssueReconciled, selectImplementationIssue } from "./issue-eligibility.mjs";
+import { assertIssueEligible, selectImplementationIssue } from "./issue-eligibility.mjs";
 import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
-import { evaluateIndependentReview, recordIndependentReviewRequest, completeIndependentReview } from "./independent-review-policy.mjs";
 import { spawn } from "node:child_process";
+import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap, verificationReviewEvidence } from "./verification-policy.mjs";
+import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -240,12 +240,12 @@ async function readConfiguration(root) {
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
-  const sourcePublication = sourcePublicationPolicy(parsed?.sourcePublication);
+  const remote = declaredPublicationRemote(parsed);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
   const requiredLocalVerification = normalizeDeclaredVerification(checks);
   if (requiredLocalVerification.length !== checks.length) throw new Error("Malformed requiredLocalVerification entry");
-  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification, sourcePublication };
+  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification, remote };
 }
 
 export async function revisionExists(cwd, revision) {
@@ -708,13 +708,13 @@ export function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
-async function writeLandingState(context, artifact, review, verification, phase = "landed", localOnly) {
+async function writeLandingState(context, artifact, verification, phase = "landed", localOnly) {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
   await writeWorkspaceJson(statePath(context.current.name), {
     version: 1, phase, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
     integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
-    artifactDescription: artifact.description, review, verification: verification.status,
+    artifactDescription: artifact.description, verification: verification.status,
     verificationCommands: verification.passed, verificationEvidence: verification, landedAt: new Date().toISOString(),
     workspaceImplementationChangeId: (await workspaceMetadata(context.current.name))?.implementationChangeId,
     cleanupEligibleAt: cleanupEligibleAt(new Date().toISOString()),
@@ -833,7 +833,7 @@ async function ensureLandingDescription(cwd, context, target) {
 
 /** The remote this landing publishes to, or null for local-only/undeclared delivery. */
 function publicationRemote(context, localOnly) {
-  return localOnly === true ? null : context.configuration.sourcePublication?.remote ?? null;
+  return localOnly === true ? null : context.configuration.remote ?? null;
 }
 
 const fetchIntegration = (cwd, remote, branch) => run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { cwd });
@@ -870,10 +870,9 @@ async function landInSlot(cwd, context, remote, options) {
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
   const result = await withWorkspaceTransaction(`writer:${context.current.name}`, async () => {
     const prior = await readJsonOptional(statePath(context.current.name));
-    if (prior?.review && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
+    if (prior?.phase === "landed" && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
       && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
-      if (options.independentReview === true && prior.review.status !== "pass") throw new Error("Source already integrated without independent review; use an ad-hoc review, not another landing");
-      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), review: prior.review,
+      return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId),
         verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
     }
     await assertWorkspaceMutationAllowed(context);
@@ -883,10 +882,31 @@ async function landInSlot(cwd, context, remote, options) {
     const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
     try { return await landOwnedWorkspace(cwd, options); } finally { await release(); }
   });
+  return { ...result, ...await completeLanding(cwd, context, result.artifact.commitId, options) };
+}
+
+/**
+ * The tail every landing shares once the integration bookmark has moved: the
+ * repository's declared external-state step (for example a development database
+ * migration), then the push. A blocked or failed step keeps the local
+ * integration; rerunning land retries it without re-verifying landed source.
+ */
+export async function completeLanding(cwd, context, commitId, options = {}) {
+  const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
+  const postIntegration = await finalizePostIntegration({
+    gitDirectory, integratedCommitSha: commitId, approval: options.postIntegrationApproval,
+    readIntegrationTip: async () => (await revisionFacts(cwd, context.integrationBranch)).commitId,
+    ...(options.environment ? { environment: options.environment } : {}),
+  });
+  if (!postIntegration.ok) {
+    return { ok: false, postIntegration, publication: { ok: false, status: "blocked", commitId,
+      reason: `Post-integration ${postIntegration.status}${postIntegration.reason ? `: ${postIntegration.reason}` : ""}. The local integration is kept; resolve it and rerun land.` } };
+  }
+  const remote = publicationRemote(context, options.localOnly);
   const publication = remote
-    ? await publishIntegration(cwd, remote, context.integrationBranch, result.artifact.commitId)
-    : { ok: true, status: options.localOnly === true ? "local_only" : "not_declared", commitId: result.artifact.commitId };
-  return { ...result, ok: publication.ok, publication };
+    ? await publishIntegration(cwd, remote, context.integrationBranch, commitId)
+    : { ok: true, status: options.localOnly === true ? "local_only" : "not_declared", commitId };
+  return { ok: publication.ok, postIntegration, publication };
 }
 
 /** True when the landed artifact is on the declared remote, or when no publication applies. */
@@ -920,45 +940,22 @@ async function landOwnedWorkspaceInSlot(cwd, options) {
       throw new Error("Integration bookmark moved; rerun landing against the new base");
   };
   await assertIdentity();
-  const summary = await jj(cwd, ["diff", "--from", base.commitId, "--to", candidate.commitId, "--summary"]);
-  const metadata = await workspaceMetadata(context.current.name);
-  const exact = {
-    workspaceName: context.current.name, workspacePath: context.current.root,
-    integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
-    integrationBaseCommitSha: base.commitId, changeId: candidate.changeId, commitSha: candidate.commitId,
-    changedPaths: summary.split(/\r?\n/).filter(Boolean).map((line) => line.replace(/^[A-Z?]\s+/, "")),
-    stat: await jj(cwd, ["diff", "--from", base.commitId, "--to", candidate.commitId, "--stat"]),
-    diff: await jj(cwd, ["diff", "--git", "--from", base.commitId, "--to", candidate.commitId]),
-    verification: [], ...(typeof metadata?.issueNumber === "number" ? { issueNumber: metadata.issueNumber } : {}),
-  };
-  const reviewOptions = { required: options.independentReview, waiver: options.independentReviewWaiver,
-    requesterIdentity: options.requesterIdentity, implementationSessionFile: options.implementationSessionFile,
-    runReview: options.runReview };
-  await recordIndependentReviewRequest(exact, reviewOptions);
   const verification = await runVerification(context, options.onProgress);
-  exact.verification = verificationReviewEvidence(verification);
   await assertIdentity();
-  const review = await evaluateIndependentReview(exact, reviewOptions);
-  if (!["not_requested", "pass", "waived"].includes(review.status)) {
-    const error = new Error(`Independent code review ${review.status}; landing remains blocked`);
-    error.outcome = review;
-    throw error;
-  }
   await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
     await assertIdentity();
     await assertDefaultReady(context);
-    await writeLandingState(context, candidate, review, verification, "prepared", options.localOnly);
+    await writeLandingState(context, candidate, verification, "prepared", options.localOnly);
     await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", candidate.commitId]);
-    await writeLandingState(context, candidate, review, verification, "landed", options.localOnly);
-    await completeIndependentReview(exact, reviewOptions);
+    await writeLandingState(context, candidate, verification, "landed", options.localOnly);
     await jj(context.integration.root, ["new", context.integrationBranch]);
   });
   const currentAfter = await revisionFacts(cwd, "@");
   if (!currentAfter.empty) await jj(cwd, ["new", context.integrationBranch]);
-  return { context, artifact: candidate, review, verification };
+  return { context, artifact: candidate, verification };
 }
 
-/** Exact source proof required before one session may leave its current Issue. */
+/** Exact source proof (landed, pushed, nothing new) before a session leaves this workspace. */
 export async function assertWorkspaceDelivered(cwd) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") throw new Error("No current Issue workspace");
@@ -970,14 +967,9 @@ export async function assertWorkspaceDelivered(cwd) {
     || (state.issueNumber ?? null) !== (metadata?.issueNumber ?? null)
     || !await revisionExists(cwd, `${state.artifactCommitId} & ::${context.integrationBranch}`)
     || await workspaceHasUnintegratedWork(cwd, context.integrationBranch)) {
-    throw new Error("Finish and reconcile the current Issue before continuing to another workspace");
+    throw new Error("Land the current workspace before continuing to another one");
   }
   if (!await artifactPublished(cwd, context, state)) throw new Error("Source integrated locally but not yet pushed; rerun land before continuing");
-  await assertIssueReconciled(context.integration.root, state.issueNumber, state.artifactCommitId, async (executable, args, root) => {
-    const result = await run(executable, args, { cwd: root });
-    if (result.code !== 0) throw new Error(result.stderr || "Completion bookkeeping unavailable");
-    return result.stdout;
-  });
   return state;
 }
 
