@@ -104,7 +104,7 @@ export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promi
 
 export function normalizeDeclaredVerification(value: unknown): WorkspaceContext["configuration"]["requiredLocalVerification"];
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
-export function prepareWorkspaceContinuation(task: string, cwd: string, scopeNumber?: number): ReturnType<typeof createWorkspace>;
+export function prepareWorkspaceContinuation(task: string, cwd: string): ReturnType<typeof createWorkspace>;
 
 export function workspaceContinuationState(
   context: WorkspaceContext | null,

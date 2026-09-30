@@ -6,7 +6,7 @@ import { verificationSlotEnvironment, withVerificationSlot } from "./verificatio
 import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
-import { assertIssueEligible, selectImplementationIssue } from "./issue-eligibility.mjs";
+import { assertIssueEligible } from "./issue-eligibility.mjs";
 import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -960,18 +960,12 @@ export async function assertWorkspaceDelivered(cwd) {
   return state;
 }
 
-export async function prepareWorkspaceContinuation(task, cwd, scopeNumber) {
+/** A fresh workspace for this conversation's next task, once the current one is delivered. */
+export async function prepareWorkspaceContinuation(task, cwd) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Continuation requires a JJ project");
   if (context.current.name !== "default") await assertWorkspaceDelivered(cwd);
-  const issueNumber = await selectImplementationIssue(context.integration.root, scopeNumber, context.integrationBranch, async (executable, args, root) => {
-    const result = await run(executable, args, { cwd: root });
-    if (result.code !== 0) throw new Error(result.stderr || "Live Issue eligibility unavailable");
-    return result.stdout;
-  }, (candidateNumber) => findIssueWorkspace(context.integration.root, candidateNumber));
-  const existing = issueNumber ? await findIssueWorkspace(cwd, issueNumber) : null;
-  if (existing?.lock) throw new Error(workspaceCurrentWriterRefusal({ workspaceName: existing.name, issueNumber, lock: existing.lock }));
-  return createWorkspace(task, context.integration.root, { issueNumber });
+  return createWorkspace(task, context.integration.root);
 }
 
 export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
