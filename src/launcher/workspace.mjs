@@ -74,8 +74,12 @@ try {
     const preview = await landingPreview();
     console.log(preview.stat || "(no changed files)");
   } else if (command === "land") {
-    if (rest.some((flag) => flag !== "--local-only")) throw new Error("Usage: peach-workspace land [--local-only]");
-    const result = await landWorkspace(process.cwd(), { localOnly: rest.includes("--local-only") ? true : undefined });
+    if (rest.some((flag) => flag !== "--local-only" && flag !== "--direct")) throw new Error("Usage: peach-workspace land [--local-only] [--direct]");
+    // --direct lands the primary checkout itself, for a session explicitly working Direct.
+    const result = await landWorkspace(process.cwd(), {
+      localOnly: rest.includes("--local-only") ? true : undefined,
+      allowDefaultWorkspace: rest.includes("--direct"),
+    });
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "cleanup") {
