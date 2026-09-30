@@ -1,8 +1,7 @@
 /** Direct checkout writer authority shared by Peach and vanilla Pi.
  *
  * A Direct Thread writes the registered primary (JJ `default`) checkout. It uses
- * the same native writer-record directory and liveness semantics as isolated
- * workspaces, keyed by the canonical checkout path so repositories never share
+ * a primary-only writer record, keyed by the canonical checkout path so repositories never share
  * one `default` record. Acquisition serializes with the integration landing
  * transaction: a landing either finishes updating the primary checkout before a
  * direct write is admitted, or refuses while a live direct writer holds it. */
@@ -11,7 +10,11 @@ import { mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
-import { workspaceWriterProcessAlive } from "./workspace-writer-lock.mjs";
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code === "EPERM"; }
+}
 
 function lockHome() {
   return join(homedir(), ".pi", "agent", "workspace-state", "locks");
@@ -45,7 +48,7 @@ export async function activePrimaryWriter(integrationRoot) {
   const file = await recordPath(integrationRoot);
   const record = await readRecord(file);
   if (!record) return null;
-  if (workspaceWriterProcessAlive(record.pid)) return record;
+  if (processAlive(record.pid)) return record;
   await rm(file, { force: true });
   return null;
 }

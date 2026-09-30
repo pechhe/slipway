@@ -39,22 +39,21 @@ try {
     const context = await workspaceContext();
     for (const workspace of await inspectWorkspaces()) {
       const issue = workspace.metadata?.issueNumber ? ` · issue #${workspace.metadata.issueNumber}` : "";
-      const owner = workspace.lock ? ` · active pid ${workspace.lock.pid}` : "";
       const state = workspace.name === "default" ? "integration" : workspace.metadata?.spare ? "spare"
         : workspace.hasWork ? "unlanded" : workspace.landed ? "landed" : "empty";
       // Landed checkouts should be gone; say why one is still here and what it costs.
-      const paths = state === "landed" && !workspace.lock && workspace.root && context
+      const paths = state === "landed" && workspace.root && context
         ? await retainedWorkspaceMaterial(workspace.root, context.integration.root).catch(() => [])
         : [];
       const kept = paths.length ? ` · ${diskUsage(workspace.root)} kept: ${describeRetention({ reason: "unique-files", paths })}` : "";
-      console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${owner}${kept}`);
+      console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${kept}`);
     }
   } else if (command === "prune") {
     if (rest[0] !== "--empty") throw new Error("Usage: peach-workspace prune --empty");
     const result = await pruneEmptyWorkspaces();
     for (const name of result.removed) console.log(`Removed empty workspace: ${name}`);
     for (const skipped of result.skipped) console.error(`Skipped ${skipped.name}: ${skipped.reason}`);
-    if (result.removed.length === 0 && result.skipped.length === 0) console.log("No empty unowned workspaces to prune.");
+    if (result.removed.length === 0 && result.skipped.length === 0) console.log("No empty workspaces to prune.");
   } else if (command === "pool") {
     if (rest[0] === "refill") console.log(JSON.stringify(await provisionSpare(), null, 2));
     else if (rest.length === 0) {

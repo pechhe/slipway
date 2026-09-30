@@ -4,8 +4,6 @@ import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
-  acquireWorkspaceLock,
-  activeWorkspaceLock,
   artifactPublished,
   listWorkspaces,
   lockPath,
@@ -43,37 +41,32 @@ async function jj(cwd, args) {
 /** Unassigned spares for this repository that no live process is preparing. */
 export async function readySpares(cwd) {
   return (await listWorkspaces(cwd)).filter((workspace) =>
-    workspace.metadata?.spare === true && !workspace.lock && workspace.root && existsSync(workspace.root));
+    workspace.metadata?.spare === true && workspace.metadata?.prepared === true && workspace.root && existsSync(workspace.root));
 }
 
-/** Ensure one spare exists; dependency preparation happens outside the pool lock. */
+/** Prepare one spare under the allocation transaction, never a session writer lease. */
 export async function provisionSpare(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
   if (!context) return { provisioned: false, reason: "not-jj" };
-  const created = await withWorkspaceTransaction(`pool:${context.integration.root}`, async () => {
-    const all = await listWorkspaces(cwd);
-    if (all.some((workspace) => workspace.metadata?.spare === true)) return null;
-    const name = `${projectSlug(context.integration.root)}-spare-${randomUUID().slice(0, 6)}`;
-    const workspacePath = join(WORKSPACE_HOME, name);
-    await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
-    await jj(context.integration.root, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
-    await mkdir(join(homedir(), ".pi", "agent", "workspace-state", "workspaces"), { recursive: true, mode: 0o700 });
-    await writeWorkspaceJson(metadataPath(name), {
-      version: 1, workspaceName: name, workspacePath, integrationRoot: context.integration.root,
-      spare: true, createdAt: new Date().toISOString(),
-    });
-    return workspacePath;
+  return withWorkspaceTransaction(`pool:${context.integration.root}`, async () => {
+    const spare = (await listWorkspaces(cwd)).find((workspace) => workspace.metadata?.spare === true);
+    if (spare?.metadata?.prepared === true) return { provisioned: false, reason: "spare-exists" };
+    const name = spare?.name ?? `${projectSlug(context.integration.root)}-spare-${randomUUID().slice(0, 6)}`;
+    const workspacePath = spare?.root ?? join(WORKSPACE_HOME, name);
+    if (!spare) {
+      await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
+      await jj(context.integration.root, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
+      await mkdir(join(homedir(), ".pi", "agent", "workspace-state", "workspaces"), { recursive: true, mode: 0o700 });
+      await writeWorkspaceJson(metadataPath(name), {
+        version: 1, workspaceName: name, workspacePath, integrationRoot: context.integration.root,
+        spare: true, prepared: false, createdAt: new Date().toISOString(),
+      });
+    }
+    // An interrupted preparation remains unassigned and can be retried here.
+    await prepareWorkspaceDependencies(workspacePath, { quiet: true });
+    await writeWorkspaceJson(metadataPath(name), { ...await workspaceMetadata(name), prepared: true });
+    return { provisioned: true, workspacePath };
   });
-  if (!created) return { provisioned: false, reason: "spare-exists" };
-  // Held while installing so a concurrent claim skips it rather than racing the install.
-  const spare = await workspaceContext(created);
-  const release = await acquireWorkspaceLock(spare);
-  try {
-    await prepareWorkspaceDependencies(created, { quiet: true });
-  } finally {
-    await release();
-  }
-  return { provisioned: true, workspacePath: created };
 }
 
 /**
@@ -89,7 +82,7 @@ export async function claimSpare(cwd, name) {
     if (!spare) return null;
     const { name: assigned } = await renameWorkspace(spare.root, name);
     await jj(spare.root, ["new", context.integrationBranch]);
-    const { spare: _released, createdAt: _created, ...metadata } = (await workspaceMetadata(assigned)) ?? {};
+    const { spare: _released, prepared: _prepared, createdAt: _created, ...metadata } = (await workspaceMetadata(assigned)) ?? {};
     await writeWorkspaceJson(metadataPath(assigned), { ...metadata, workspaceName: assigned, claimedAt: new Date().toISOString() });
     return { root: spare.root, name: assigned };
   });
@@ -169,11 +162,11 @@ export async function uniqueUntrackedMaterial(root, limit = 5, generated = []) {
   return found;
 }
 
-/** Release a delivered checkout: integrated, published, no new or unique material, no writer. */
+/** Release a delivered checkout: integrated, published, no new or unique material. */
 export async function cleanupLandedWorkspace(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
-  return withWorkspaceTransaction(`writer:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd));
+  return withWorkspaceTransaction(`cleanup:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd));
 }
 
 async function cleanupLandedWorkspaceUnlocked(cwd) {
@@ -199,7 +192,6 @@ async function cleanupLandedWorkspaceUnlocked(cwd) {
   if (unique.length) return { cleaned: false, reason: "unique-files", paths: unique };
   const retention = cleanupRetentionReason(state, context, await workspaceMetadata(context.current.name));
   if (retention) return { cleaned: false, reason: retention };
-  if (await activeWorkspaceLock(context.current.name)) return { cleaned: false, reason: "writer-owned" };
   const integrated = await revisionExists(
     context.integration.root,
     `${state.artifactCommitId} & ::${state.integrationBranch}`,

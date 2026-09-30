@@ -80,32 +80,16 @@ function unblockedEpic() {
   return { run, calls };
 }
 
-test("Epic selection skips a live-owned preferred sibling and refreshes after release", async () => {
+test("Epic selection resumes an assigned child without needing an owner lease", async () => {
   const { run, calls } = unblockedEpic();
-  const owned = new Set([11]);
-  const read: number[] = [];
-  const readWorkspace = async (number: number) => {
-    if (number !== 10) assert.ok(calls.some((call) => call.includes(`/issues/${number}/dependencies/`)), "ownership is read after live dependency proof");
-    read.push(number);
-    return { name: `repo-i${number}`, lock: owned.has(number) ? { pid: 123 } : null };
-  };
-  assert.equal(await selectImplementationIssue("/repo", 10, "main", run, readWorkspace), 12);
-  assert.deepEqual(read, [11, 12, 12]);
-  owned.add(12);
-  await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, readWorkspace),
-    /No eligible child remains:.*#11 has a current writer.*#12 has a current writer/);
-  owned.delete(11);
-  assert.equal(await selectImplementationIssue("/repo", 10, "main", run, readWorkspace), 11);
-  assert.deepEqual([...owned], [12], "selection never releases a writer");
+  assert.equal(await selectImplementationIssue("/repo", 10, "main", run, async (number) => number === 12 ? { name: "repo-i12" } : null), 12);
   assert.ok(calls.every((call) => !/--method|workspace add/.test(call)), "selection allocates and publishes nothing");
 });
 
-test("missing or failed native ownership evidence cannot admit a child", async () => {
+test("Epic selection needs no ownership evidence but preserves assignment lookup failures", async () => {
   const { run } = unblockedEpic();
-  await assert.rejects(selectImplementationIssue("/repo", 10, "main", run), /requires live native workspace ownership/);
-  await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, async () => {
-    throw new Error("Ambiguous native ownership");
-  }), /Ambiguous native ownership/);
+  assert.equal(await selectImplementationIssue("/repo", 10, "main", run), 11);
+  await assert.rejects(selectImplementationIssue("/repo", 10, "main", run, async () => { throw new Error("Workspace lookup unavailable"); }), /Workspace lookup unavailable/);
 });
 
 test("an explicit leaf still reaches owned-task recovery instead of sibling selection", async () => {
@@ -113,19 +97,6 @@ test("an explicit leaf still reaches owned-task recovery instead of sibling sele
   assert.equal(await selectImplementationIssue("/repo", 11, "main", run, async () => {
     assert.fail("A direct Issue request must use the existing recovery ownership boundary");
   }), 11);
-});
-
-test("a writer acquired during frontier refresh does not strand an available sibling", async () => {
-  const { run } = unblockedEpic();
-  let firstOwned = false;
-  const read: number[] = [];
-  const readWorkspace = async (number: number) => {
-    read.push(number);
-    if (number === 12) firstOwned = true;
-    return { name: `repo-i${number}`, lock: number === 11 && firstOwned ? { pid: 123 } : null };
-  };
-  assert.equal(await selectImplementationIssue("/repo", 10, "main", run, readWorkspace), 12);
-  assert.deepEqual(read, [11, 12, 11, 12]);
 });
 
 

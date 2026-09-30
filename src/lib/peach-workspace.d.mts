@@ -1,6 +1,3 @@
-export interface WorkspaceLock {
-  pid: number;
-}
 export interface WorkspaceMetadata {
   issueNumber?: number;
 }
@@ -10,7 +7,6 @@ export interface WorkspaceEntry {
   changeId: string;
   commitId: string;
   hasWork: boolean;
-  lock?: WorkspaceLock | null;
   metadata?: WorkspaceMetadata | null;
 }
 export interface WorkspaceContext {
@@ -84,7 +80,6 @@ export function completeLanding(cwd: string, context: { integrationBranch: strin
 export type LandingRevision = { commitId: string; changeId: string; empty: boolean; conflict: boolean; description: string };
 /** Internal host seams, not accepted from tool input. They do not own landing order. */
 export type LandingAdapter = {
-  assertWriter?: (lock: (WorkspaceLock & { revoking?: boolean }) | null) => Promise<void>;
   preview?: () => Promise<{ context: { current: { name: string; root: string }; integration: { name: string; root: string }; integrationBranch: string; configuration: { requiredLocalVerification: unknown[]; remote?: string | null } }; target: LandingRevision }>;
   repairTarget?: (target: LandingRevision) => Promise<LandingRevision>;
   finalizeCandidate?: (candidate: LandingRevision, base: LandingRevision) => Promise<LandingRevision>;
@@ -110,11 +105,6 @@ export function landingPreview(cwd?: string): Promise<{
   stat: string;
 }>;
 export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs";
-export function acquireWorkspaceLock(
-  context: WorkspaceContext,
-  /** Explicit human takeover authorisation; a string records its reason. */
-  options?: { takeOver?: boolean | string },
-): Promise<() => Promise<void>>;
 
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;
 

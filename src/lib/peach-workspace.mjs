@@ -4,15 +4,13 @@ import { cleanupEligibleAt, LANDED_WORKSPACE_REFUSAL, workspaceContinuationDispo
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { summarizeVerificationFailure } from "./verification-failure.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
-import { takeOverWorkspaceWriter, workspaceCurrentWriterRefusal, workspaceLandingWriterRefusal, workspaceWriterRecordMustBePreserved } from "./workspace-writer-lock.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
-import { assertIssueWorkspaceBoundary, assertWorkspaceIssueBoundary } from "./issue-workspace-boundary.mjs";
-import { assertIssueEligible } from "./issue-eligibility.mjs";
+
 import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
-import { mkdir, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap } from "./verification-policy.mjs";
@@ -75,77 +73,6 @@ async function readJsonOptional(path) {
   } catch {
     return null;
   }
-}
-
-export async function activeWorkspaceLock(workspaceName) {
-  const path = lockPath(workspaceName);
-  const lock = await readJsonOptional(path);
-  if (!lock) return null;
-  if (workspaceWriterRecordMustBePreserved(lock)) return lock;
-  await rm(path, { force: true });
-  return null;
-}
-
-/** `takeOver` is the human's explicit authorisation (for example `--take-over`):
- * the shared governed takeover moves writer ownership to this process first. */
-export async function acquireWorkspaceLock(context, options = {}) {
-  if (!context || context.current.name === "default") return async () => {};
-  if (options.takeOver) {
-    await assertWorkspaceMutationAllowed(context);
-    await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
-    await takeOverWorkspaceWriter({
-      workspaceName: context.current.name, workspacePath: context.current.root, owner: { surface: "pi", pid: process.pid },
-      authorisation: { humanAuthorised: true, reason: typeof options.takeOver === "string" ? options.takeOver : "pi --take-over" },
-    });
-  }
-  return withWorkspaceTransaction(`writer:${context.current.name}`, () => acquireWorkspaceLockUnlocked(context));
-}
-
-async function acquireWorkspaceLockUnlocked(context) {
-  if (!context || context.current.name === "default") return async () => {};
-  await assertWorkspaceMutationAllowed(context);
-  await assertWorkspaceIssueBoundary(context.current.name, runIssueBoundary);
-  await mkdir(LOCK_HOME, { recursive: true, mode: 0o700 });
-  const path = lockPath(context.current.name);
-  const releaseOwn = () => {
-    let released = false;
-    return async () => {
-      if (released) return;
-      released = true;
-      const current = await readJsonOptional(path);
-      if (current?.pid === process.pid) await rm(path, { force: true });
-    };
-  };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const active = await activeWorkspaceLock(context.current.name);
-    // This process already owns the writer (for example after a takeover).
-    if (active && !workspaceLandingWriterRefusal(active, [process.pid])) return releaseOwn();
-    if (active) {
-      const issueNumber = (await workspaceMetadata(context.current.name))?.issueNumber ?? null;
-      throw new Error(workspaceCurrentWriterRefusal({ workspaceName: context.current.name, issueNumber, lock: active }));
-    }
-    try {
-      const handle = await open(path, "wx", 0o600);
-      await handle.writeFile(
-        JSON.stringify(
-          {
-            version: 1,
-            pid: process.pid,
-            workspaceName: context.current.name,
-            workspacePath: context.current.root,
-            acquiredAt: new Date().toISOString(),
-          },
-          null,
-          2,
-        ),
-      );
-      await handle.close();
-      return releaseOwn();
-    } catch (error) {
-      if (error?.code !== "EEXIST" || attempt > 0) throw error;
-    }
-  }
-  throw new Error(`Could not acquire jj:${context.current.name}`);
 }
 
 export async function run(command, args, options = {}) {
@@ -346,7 +273,6 @@ export async function listWorkspaces(cwd = process.cwd()) {
     parseWorkspaceList(output).map(async (workspace) => ({
       ...workspace,
       metadata: await workspaceMetadata(workspace.name),
-      lock: await activeWorkspaceLock(workspace.name),
     })),
   );
 }
@@ -361,11 +287,7 @@ export async function inspectWorkspaces(cwd = process.cwd()) {
       hasWork:
         workspace.name === "default"
           ? false
-          : workspace.lock
-            ? true
-            : await workspaceHasUnintegratedWork(workspace.root, context.integrationBranch).catch(
-                () => true,
-              ),
+          : await workspaceHasUnintegratedWork(workspace.root, context.integrationBranch).catch(() => true),
       landed: Boolean(await readJsonOptional(statePath(workspace.name))),
     })),
   );
@@ -394,9 +316,6 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
   const storageRoot = resolve(WORKSPACE_HOME) + "/";
   if (!workspaceRoot.startsWith(storageRoot))
     throw new Error("Refusing to remove a workspace outside ~/.pi/workspaces");
-  const active = await activeWorkspaceLock(workspaceName);
-  if (active)
-    throw new Error(`jj:${workspaceName} is active (pid ${active.pid}); stop it before cleanup`);
   const metadata = await workspaceMetadata(workspaceName);
   const hasWork = await workspaceHasUnintegratedWork(target.root, context.integrationBranch).catch(
     () => true,
@@ -425,8 +344,7 @@ export async function pruneEmptyWorkspaces(cwd = process.cwd()) {
       workspace.name === "default" ||
       workspace.hasWork ||
       workspace.metadata?.issueNumber ||
-      workspace.metadata?.spare ||
-      workspace.lock
+      workspace.metadata?.spare
     )
       continue;
     try {
@@ -561,17 +479,10 @@ async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
   for (const workspace of await listWorkspaces(cwd)) {
     if (workspace.name === intendedWorkspace || workspace.metadata?.issueNumber !== issueNumber)
       continue;
-    const owner = workspace.lock ? ` by process ${workspace.lock.pid}` : "";
     throw new Error(
-      `Issue #${issueNumber} already belongs to jj:${workspace.name}${owner}; resume that workspace instead`,
+      `Issue #${issueNumber} is already associated with jj:${workspace.name}; resume that workspace instead`,
     );
   }
-}
-
-async function runIssueBoundary(executable, args, cwd) {
-  const result = await run(executable, args, { cwd });
-  if (result.code !== 0) throw new Error(result.stderr || "Issue hierarchy unavailable");
-  return result.stdout;
 }
 
 export async function attachWorkspaceIssue(cwd, issueNumber) {
@@ -590,7 +501,6 @@ async function attachWorkspaceIssueUnlocked(cwd, issueNumber) {
   await assertIssueAvailable(cwd, issueNumber, context.current.name);
   const prior = await workspaceMetadata(context.current.name);
   if (prior?.issueNumber && prior.issueNumber !== issueNumber) throw new Error("This workspace already belongs to another Issue; preserve its identity");
-  await assertIssueWorkspaceBoundary(context.integration.root, issueNumber, context.current.name, runIssueBoundary, { existingBinding: prior?.issueNumber === issueNumber });
   await mkdir(METADATA_HOME, { recursive: true, mode: 0o700 });
   const metadata = {
     ...(await workspaceMetadata(context.current.name)),
@@ -652,14 +562,8 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
   return withWorkspaceTransaction(`allocate:${context.integration.root}`, async () => {
-    await assertIssueEligible(context.integration.root, options.issueNumber, context.integrationBranch, async (executable, args, root) => {
-      const result = await run(executable, args, { cwd: root });
-      if (result.code !== 0) throw new Error(result.stderr || "Issue eligibility unavailable");
-      return result.stdout;
-    });
     if (options.issueNumber) {
       const existing = await findIssueWorkspace(cwd, options.issueNumber);
-      await assertIssueWorkspaceBoundary(context.integration.root, options.issueNumber, existing?.name ?? context.current.name, runIssueBoundary, { existingBinding: Boolean(existing) });
       if (existing?.root) {
         const resumed = await workspaceContext(existing.root);
         if (!resumed) throw new Error(`Issue #${options.issueNumber} workspace disappeared during resume`);
@@ -879,8 +783,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
 async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
-  // The host already holds its writer transaction at admission; vanilla owns it here.
-  const owned = async () => {
+  const integrate = async () => {
     const prior = await readJsonOptional(statePath(context.current.name));
     if (prior?.phase === "landed" && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
       && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
@@ -890,16 +793,9 @@ async function landInSlot(cwd, context, remote, options) {
     }
     if (context.current.name === "default") return landOwnedWorkspace(cwd, context, options);
     await assertWorkspaceMutationAllowed(context);
-    const lock = await activeWorkspaceLock(context.current.name);
-    if (options.adapter?.assertWriter) await options.adapter.assertWriter(lock);
-    else {
-      const refusal = workspaceLandingWriterRefusal(lock && { ...lock, workspaceName: context.current.name });
-      if (refusal) throw new Error(refusal);
-    }
-    const release = lock ? async () => {} : await acquireWorkspaceLockUnlocked(context);
-    try { return await landOwnedWorkspace(cwd, context, options); } finally { await release(); }
+    return landOwnedWorkspace(cwd, context, options);
   };
-  const result = options.adapter ? await owned() : await withWorkspaceTransaction(`writer:${context.current.name}`, owned);
+  const result = await integrate();
   return { ...result, ...await completeLanding(cwd, context, result.artifact.commitId, options) };
 }
 
