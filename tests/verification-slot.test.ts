@@ -9,104 +9,127 @@ import {
   withVerificationSlot,
 } from "../src/lib/verification-slot.mjs";
 
-test("landing verifications on one machine run one at a time, in arrival order", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-"));
+type WaitStatus = { ahead: number; holder: string | null };
+
+function signal<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+/**
+ * Runs a scenario against a private slot root. Held operations are released and
+ * every started landing settles before the root is removed, so a failing
+ * assertion cannot leave a landing writing into a deleted fixture.
+ */
+async function withSlotFixture(
+  name: string,
+  scenario: (fixture: {
+    root: string;
+    env: NodeJS.ProcessEnv;
+    track: <T>(landing: Promise<T>) => Promise<T>;
+    hold: () => { promise: Promise<void>; resolve: () => void };
+  }) => Promise<void>,
+) {
+  const root = await mkdtemp(path.join(tmpdir(), `verification-slot-${name}-`));
   const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
+  const landings: Promise<unknown>[] = [];
+  const holds: Array<() => void> = [];
   try {
-    const events: string[] = [];
-    let releaseFirst!: () => void;
-    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    let waited = false;
-    const first = withVerificationSlot(async () => {
-      events.push("first:start");
-      await firstHeld;
-      events.push("first:end");
-    }, { root, env, pollMs: 10 });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const second = withVerificationSlot(async () => { events.push("second:start"); }, {
-      root, env, pollMs: 10, onWait: () => { waited = true; },
+    await scenario({
+      root,
+      env,
+      track: (landing) => { landings.push(landing); return landing; },
+      hold: () => { const held = signal(); holds.push(held.resolve); return held; },
     });
-    await new Promise((resolve) => setTimeout(resolve, 80));
+  } finally {
+    for (const release of holds) release();
+    await Promise.allSettled(landings);
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("landing verifications on one machine run one at a time, in arrival order", () =>
+  withSlotFixture("order", async ({ root, env, track, hold }) => {
+    const events: string[] = [];
+    const firstHeld = hold();
+    const firstStarted = signal();
+    const secondWaiting = signal<WaitStatus>();
+    const first = track(withVerificationSlot(async () => {
+      events.push("first:start");
+      firstStarted.resolve();
+      await firstHeld.promise;
+      events.push("first:end");
+    }, { root, env, pollMs: 10 }));
+    await firstStarted.promise;
+    const second = track(withVerificationSlot(async () => { events.push("second:start"); }, {
+      root, env, pollMs: 10, onWait: secondWaiting.resolve,
+    }));
+    await secondWaiting.promise;
     assert.deepEqual(events, ["first:start"]);
-    assert.equal(waited, true);
-    releaseFirst();
+    firstHeld.resolve();
     await Promise.all([first, second]);
     assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  }));
 
-test("a landing holding the slot runs its own verification without re-queueing, while others still wait", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-reentrant-"));
-  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
-  try {
+test("a landing holding the slot runs its own verification without re-queueing, while others still wait", () =>
+  withSlotFixture("reentrant", async ({ root, env, track, hold }) => {
     const events: string[] = [];
-    let releaseLanding!: () => void;
-    const landingHeld = new Promise<void>((resolve) => { releaseLanding = resolve; });
-    let innerVerified!: () => void;
-    const verified = new Promise<void>((resolve) => { innerVerified = resolve; });
-    const landing = withVerificationSlot(async () => {
+    const landingHeld = hold();
+    const verified = signal();
+    const otherWaiting = signal<WaitStatus>();
+    const landing = track(withVerificationSlot(async () => {
       events.push("landing:rebase");
       await withVerificationSlot(async () => { events.push("landing:verify"); }, { root, env, pollMs: 10 });
-      innerVerified();
-      await landingHeld;
+      verified.resolve();
+      await landingHeld.promise;
       events.push("landing:integrate");
-    }, { root, env, pollMs: 10 });
-    await verified;
-    let waited = false;
-    const other = withVerificationSlot(async () => { events.push("other:rebase"); }, {
-      root, env, pollMs: 10, onWait: () => { waited = true; },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    assert.equal(waited, true);
-    releaseLanding();
+    }, { root, env, pollMs: 10 }));
+    await verified.promise;
+    const other = track(withVerificationSlot(async () => { events.push("other:rebase"); }, {
+      root, env, pollMs: 10, onWait: otherWaiting.resolve,
+    }));
+    await otherWaiting.promise;
+    landingHeld.resolve();
     await Promise.all([landing, other]);
     assert.deepEqual(events, ["landing:rebase", "landing:verify", "landing:integrate", "other:rebase"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  }));
 
-test("a landing started inside a held slot does not wait for its parent", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-nested-"));
-  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
-  try {
+test("a landing started inside a held slot does not wait for its parent", () =>
+  withSlotFixture("nested", async ({ root, env }) => {
     const nested = await withVerificationSlot(
       () => withVerificationSlot(async () => "nested ran", { root, env: verificationSlotEnvironment(env), pollMs: 10 }),
       { root, env, pollMs: 10 },
     );
     assert.equal(nested, "nested ran");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  }));
 
-test("a waiting landing reports how many landings are ahead and who holds the slot", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "verification-slot-ahead-"));
-  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
-  const until = async (condition: () => boolean) => {
-    while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5));
-  };
-  try {
-    let releaseHolder!: () => void;
-    const holderHeld = new Promise<void>((resolve) => { releaseHolder = resolve; });
-    let holding = false;
-    const holder = withVerificationSlot(async () => { holding = true; await holderHeld; }, { root, env, pollMs: 10, label: "jj:holder" });
-    await until(() => holding);
-    const firstStatuses: Array<{ ahead: number; holder: string | null }> = [];
-    const secondStatuses: Array<{ ahead: number; holder: string | null }> = [];
-    const first = withVerificationSlot(async () => {}, { root, env, pollMs: 10, label: "jj:first", onWait: (status) => firstStatuses.push(status) });
-    await until(() => firstStatuses.length > 0);
-    const second = withVerificationSlot(async () => {}, { root, env, pollMs: 10, label: "jj:second", onWait: (status) => secondStatuses.push(status) });
-    await until(() => secondStatuses.length > 0);
+test("a waiting landing reports how many landings are ahead and who holds the slot", () =>
+  withSlotFixture("ahead", async ({ root, env, track, hold }) => {
+    const holderHeld = hold();
+    const holding = signal();
+    const firstWaiting = signal();
+    const secondWaiting = signal();
+    const firstStatuses: WaitStatus[] = [];
+    const secondStatuses: WaitStatus[] = [];
+    const holder = track(withVerificationSlot(async () => { holding.resolve(); await holderHeld.promise; }, {
+      root, env, pollMs: 10, label: "jj:holder",
+    }));
+    await holding.promise;
+    const first = track(withVerificationSlot(async () => {}, {
+      root, env, pollMs: 10, label: "jj:first",
+      onWait: (status) => { firstStatuses.push(status); firstWaiting.resolve(); },
+    }));
+    await firstWaiting.promise;
+    const second = track(withVerificationSlot(async () => {}, {
+      root, env, pollMs: 10, label: "jj:second",
+      onWait: (status) => { secondStatuses.push(status); secondWaiting.resolve(); },
+    }));
+    await secondWaiting.promise;
     assert.deepEqual(firstStatuses[0], { ahead: 1, holder: "jj:holder" });
     assert.deepEqual(secondStatuses[0], { ahead: 2, holder: "jj:holder" });
-    releaseHolder();
+    holderHeld.resolve();
     await Promise.all([holder, first, second]);
     // The slot is not first-come-first-served, so only the count shrinking is guaranteed.
     assert.ok(secondStatuses.every((status, index) => index === 0 || status.ahead <= secondStatuses[index - 1]!.ahead));
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  }));
