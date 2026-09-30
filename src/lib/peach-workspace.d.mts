@@ -16,6 +16,8 @@ export interface WorkspaceContext {
   configuration: {
     integrationBranch?: string;
     requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
+    /** Commands run in the background after a fresh integration; see post-land-verification. */
+    postLandVerification?: import("./post-land-verification.mjs").PostLandCheck[];
     /** Remote the integration branch is pushed to after landing; null when undeclared. */
     remote?: string | null;
   };
@@ -93,10 +95,18 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   adapter?: LandingAdapter;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
+  /** Command that runs one post-land record file (appended); defaults to importing this module. */
+  postLandRunner?: string[];
 }): Promise<LandingTail & {
   artifact: LandingRevision; context: WorkspaceContext;
   cleanupPending?: boolean; cleanupError?: string;
   verification: import("./verification-policy.mjs").VerificationEvidence;
+  /** The integration branch tip this landing verified against and advanced; absent when a rerun only republished. */
+  base?: string;
+  /** The declared background verification this landing started. */
+  postLand?: { status: string; commit?: string; log?: string; reason?: string };
+  /** An earlier landing's background verification on this repository did not pass. */
+  postLandWarning?: string;
 }>;
 export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?: boolean }): Promise<{
   context: WorkspaceContext;
@@ -117,3 +127,5 @@ export function workspaceContinuationState(
 ): Promise<import("./workspace-delivery-lifecycle.mjs").WorkspaceContinuationDisposition>;
 
 export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
+
+export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";

@@ -43,7 +43,7 @@ export async function integrateLandingCandidate(cwd, options, io) {
     options.onStage?.("cleaning");
     const state = direct ? { artifactCommitId: candidate.commitId } : await readJsonOptional(statePath(context.current.name));
     const cleanup = await finishLanding(context, state, options, io);
-    return { context, artifact: candidate, verification, ...cleanup };
+    return { context, artifact: candidate, base: base.commitId, verification, ...cleanup };
   }
 }
 

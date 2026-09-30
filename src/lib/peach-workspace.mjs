@@ -10,6 +10,7 @@ import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
+import { describePostLandFailure, latestPostLandResult, postLandChecks, startPostLandVerification } from "./post-land-verification.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -189,14 +190,15 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
 async function readConfiguration(root) {
   let raw;
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [] }; throw error; }
+  catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [], postLandVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
   const remote = declaredPublicationRemote(parsed);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
   const requiredLocalVerification = normalizeDeclaredVerification(checks);
   if (requiredLocalVerification.length !== checks.length) throw new Error("Malformed requiredLocalVerification entry");
-  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification, remote };
+  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification,
+    postLandVerification: postLandChecks(parsed.postLandVerification), remote };
 }
 
 export async function revisionExists(cwd, revision) {
@@ -775,9 +777,13 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
   const remote = publicationRemote(context, options.localOnly);
   const onProgress = options.onProgress ?? ((line) => console.log(line));
+  // A failed background run on this repository is the next landing's to see.
+  const postLandFailure = describePostLandFailure(await latestPostLandResult(context.integration.root));
+  if (postLandFailure) onProgress(`[post-land] ${postLandFailure}`);
   // One landing at a time holds the machine-wide slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
-  return await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
+  const result = await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
+  return postLandFailure ? { ...result, postLandWarning: postLandFailure } : result;
 }
 
 async function landInSlot(cwd, context, remote, options) {
@@ -796,7 +802,22 @@ async function landInSlot(cwd, context, remote, options) {
     return landOwnedWorkspace(cwd, context, options);
   };
   const result = await integrate();
-  return { ...result, ...await completeLanding(cwd, context, result.artifact.commitId, options) };
+  const completed = await completeLanding(cwd, context, result.artifact.commitId, options);
+  return { ...result, ...completed, ...await startPostLand(cwd, context, result, options.postLandRunner) };
+}
+
+/** A fresh integration starts the repository's declared background verification. */
+async function startPostLand(cwd, context, result, runner) {
+  const checks = context.configuration.postLandVerification ?? [];
+  if (!result.base || !checks.length) return {};
+  try {
+    const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
+    const record = await startPostLandVerification({ integrationRoot: context.integration.root, gitDirectory, base: result.base, commit: result.artifact.commitId, checks, runner });
+    return { postLand: { status: record.status, commit: record.commit, log: record.log } };
+  } catch (error) {
+    // The integration stands; only its background evidence is missing.
+    return { postLand: { status: "not_started", reason: error instanceof Error ? error.message : String(error) } };
+  }
 }
 
 /**
@@ -878,3 +899,5 @@ export async function prepareWorkspaceContinuation(task, cwd) {
 
 export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
+// The installed helper bundle is also the detached post-land runner's module.
+export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";

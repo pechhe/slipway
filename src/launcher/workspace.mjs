@@ -15,6 +15,8 @@ import {
   readySpares,
   describeRetention,
   retainedWorkspaceMaterial,
+  latestPostLandResult,
+  runPostLandVerification,
 } from "../lib/peach-workspace.mjs";
 import { execFileSync } from "node:child_process";
 
@@ -29,8 +31,10 @@ const [command, ...rest] = process.argv.slice(2);
 try {
   if (command === "status") {
     const context = await workspaceContext();
+    const postLand = context ? await latestPostLandResult(context.integration.root) : null;
     console.log(context
-      ? JSON.stringify({ mode: await readWorkspaceMode(), workspace: context.current, integration: context.integration, integrationBranch: context.integrationBranch }, null, 2)
+      ? JSON.stringify({ mode: await readWorkspaceMode(), workspace: context.current, integration: context.integration, integrationBranch: context.integrationBranch,
+        ...(postLand ? { postLand: { commit: postLand.commit, status: postLand.status, finishedAt: postLand.finishedAt, log: postLand.log, ...(postLand.failed ? { failed: postLand.failed.command } : {}) } } : {}) }, null, 2)
       : "Not inside a Jujutsu repository");
   } else if (command === "mode") {
     const requested = rest[0];
@@ -78,9 +82,15 @@ try {
     const result = await landWorkspace(process.cwd(), {
       localOnly: rest.includes("--local-only") ? true : undefined,
       allowDefaultWorkspace: rest.includes("--direct"),
+      // This CLI, bundled or not, is its own background verification runner.
+      postLandRunner: [process.execPath, process.argv[1], "post-land-run"],
     });
-    console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication }, null, 2));
+    console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication,
+      ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
+  } else if (command === "post-land-run") {
+    // Internal: the detached process a landing starts for its background verification.
+    await runPostLandVerification(rest[0]);
   } else if (command === "cleanup") {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${describeRetention(result)}.`);
