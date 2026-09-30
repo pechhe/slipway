@@ -813,6 +813,9 @@ export async function completeLanding(cwd, context, commitId, options = {}) {
   const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
   const postIntegration = await finalizePostIntegration({
     gitDirectory, integratedCommitSha: commitId, approval: options.postIntegrationApproval,
+    // A retry after a later landing: a completed descendant with unchanged migration
+    // inputs covers this artifact, or its exact source runs; drift still fails closed.
+    recoverDescendant: true,
     readIntegrationTip: async () => (await revisionFacts(cwd, context.integrationBranch)).commitId,
     ...(options.environment ? { environment: options.environment } : {}),
   });
