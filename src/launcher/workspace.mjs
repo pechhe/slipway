@@ -19,6 +19,7 @@ import {
   runPostLandVerification,
 } from "../lib/peach-workspace.mjs";
 import { execFileSync } from "node:child_process";
+import { setPriority } from "node:os";
 
 /** Disk use of a checkout, for spotting retained workspaces worth reclaiming. */
 function diskUsage(root) {
@@ -89,7 +90,9 @@ try {
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "post-land-run") {
-    // Internal: the detached process a landing starts for its background verification.
+    // Internal: the detached process a landing starts for its background
+    // verification. Landings take priority over it for the machine.
+    try { setPriority(10); } catch { /* unsupported */ }
     await runPostLandVerification(rest[0]);
   } else if (command === "cleanup") {
     const result = await cleanupLandedWorkspace();

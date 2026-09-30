@@ -19,7 +19,8 @@ export function postLandChecks(value?: unknown): PostLandCheck[];
 export function startPostLandVerification(input: {
   integrationRoot: string; gitDirectory: string; base: string; commit: string; checks: PostLandCheck[];
   runner?: string[];
+  env?: NodeJS.ProcessEnv;
 }): Promise<PostLandRecord>;
 export function latestPostLandResult(integrationRoot: string): Promise<PostLandRecord | null>;
 export function describePostLandFailure(record: PostLandRecord | null): string | null;
-export function runPostLandVerification(recordFile: string): Promise<void>;
+export function runPostLandVerification(recordFile: string, env?: NodeJS.ProcessEnv): Promise<void>;

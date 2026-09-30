@@ -6,7 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "vite-plus/test";
 import { landWorkspace } from "../src/lib/peach-workspace.mjs";
-import { describePostLandFailure, latestPostLandResult, postLandRoot, type PostLandRecord } from "../src/lib/post-land-verification.mjs";
+import { describePostLandFailure, latestPostLandResult, postLandRoot, startPostLandVerification, type PostLandRecord } from "../src/lib/post-land-verification.mjs";
 
 const jj = (cwd: string, args: string[]) =>
   execFileSync("jj", ["--color=never", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -80,6 +80,17 @@ test("a post-land run whose process died before recording a result is reported, 
   const record = await latestPostLandResult("/repository");
   assert.equal(record?.status, "error");
   assert.match(describePostLandFailure(record) ?? "", /exited before recording a result/);
+});
+
+test("a detached runner that cannot start is recorded as an error instead of failing the landing process", async () => {
+  const commit = "e".repeat(40);
+  await startPostLandVerification({
+    integrationRoot: "/unstartable", gitDirectory: "/unstartable/.git", base: "f".repeat(40), commit, checks: [],
+    runner: ["/nonexistent/peach-post-land-runner"],
+  });
+  const record = await finished("/unstartable", commit);
+  assert.equal(record.status, "error");
+  assert.match(record.reason ?? "", /could not start/);
 });
 
 test("landing starts declared post-land verification against the exact landed source, and the next landing reports its failure", async () => {

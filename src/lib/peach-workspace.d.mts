@@ -95,7 +95,7 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   adapter?: LandingAdapter;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
-  /** Command that runs one post-land record file (appended); defaults to importing this module. */
+  /** Detached command that runs one post-land record file (appended), for a caller that exits after landing; long-lived hosts omit it and run in-process. */
   postLandRunner?: string[];
 }): Promise<LandingTail & {
   artifact: LandingRevision; context: WorkspaceContext;

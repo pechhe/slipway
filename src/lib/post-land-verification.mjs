@@ -1,14 +1,13 @@
 /**
  * Background verification of a landed commit. A repository may declare
  * `postLandVerification` commands that are too slow to block every landing. Land
- * starts them after integration in a detached process, against an exact-revision
- * source view, without holding the landing slot. The outcome is a record that the
- * next landing and `peach-workspace status` report; it never changes the landed
- * integration.
+ * starts them after integration, against an exact-revision source view, without
+ * holding the landing slot. The outcome is a record that the next landing and
+ * `peach-workspace status` report; it never changes the landed integration.
  */
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, setPriority } from "node:os";
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { runBoundedProcess } from "./bounded-process.mjs";
 import { withFinalizationSource } from "./post-integration-source.mjs";
@@ -32,41 +31,39 @@ export function postLandChecks(value = []) {
 }
 
 /**
- * Queue a detached run for `base..commit`; returns its record. `runner` is the
- * command that runs one record file (appended); a bundled CLI supplies itself.
+ * Queue a run for `base..commit`; returns its record. A long-lived host (the
+ * Peach runtime, a Pi session) runs it in-process. A process that exits after
+ * landing, such as the CLI, passes `runner`: a command that runs one record file
+ * (appended) and outlives it.
  */
-export async function startPostLandVerification({ integrationRoot, gitDirectory, base, commit, checks, runner }) {
+export async function startPostLandVerification({ integrationRoot, gitDirectory, base, commit, checks, runner, env = process.env }) {
   await mkdir(postLandRoot(), { recursive: true, mode: 0o700 });
+  const file = recordFile(commit);
   const record = {
     version: 1, status: "queued", integrationRoot, gitDirectory, base, commit, checks,
     queuedAt: new Date().toISOString(), log: path.join(postLandRoot(), `${commit}.log`),
   };
-  await writeFile(recordFile(commit), JSON.stringify(record, null, 2), { mode: 0o600 });
-  const log = await open(record.log, "w", 0o600);
-  try {
-    // The landing process may exit at once; the run outlives it. By default the
-    // child loads whichever module is running this code (source or the installed
-    // helper bundle), which must export the runner.
-    const [executable, ...args] = runner ?? ["node", "--input-type=module", "-e", RUNNER, import.meta.url];
-    const child = spawn(executable, [...args, recordFile(commit)], {
-      detached: true, stdio: ["ignore", log.fd, log.fd], env: process.env,
-    });
+  await writeFile(file, JSON.stringify(record, null, 2), { mode: 0o600 });
+  await writeFile(record.log, "", { mode: 0o600 });
+  const refuse = (error) => writeFile(file, JSON.stringify({
+    ...record, status: "error", reason: `post-land verification could not start: ${error instanceof Error ? error.message : String(error)}`,
+    finishedAt: new Date().toISOString(),
+  }, null, 2), { mode: 0o600 }).catch(() => {});
+  // Kept apart from the record, which only the runner writes once started.
+  let pid = process.pid;
+  if (runner) {
+    const [executable, ...args] = runner;
+    const child = spawn(executable, [...args, file], { detached: true, stdio: "ignore", env });
+    child.once("error", refuse);
     child.unref();
-    // Kept apart from the record, which only the runner writes once started.
-    if (child.pid) await writeFile(pidFile(commit), String(child.pid), { mode: 0o600 });
-  } finally {
-    await log.close();
+    pid = child.pid ?? 0;
+  } else {
+    void runPostLandVerification(file, env).catch(refuse);
   }
+  if (pid) await writeFile(pidFile(commit), String(pid), { mode: 0o600 });
   await pruneRecords();
   return record;
 }
-
-const RUNNER = `
-const [moduleUrl, file] = process.argv.slice(1);
-const loaded = await import(moduleUrl);
-if (typeof loaded.runPostLandVerification !== "function") throw new Error("This Peach build cannot run post-land verification: " + moduleUrl);
-await loaded.runPostLandVerification(file);
-`;
 
 const pidFile = (commit) => path.join(postLandRoot(), `${commit}.pid`);
 
@@ -112,16 +109,17 @@ export function describePostLandFailure(record) {
   return `Post-land verification of ${record.commit.slice(0, 12)} ${record.status}: ${what}. Log: ${record.log}`;
 }
 
-async function runChecks(record, update) {
+async function runChecks(record, update, baseEnv) {
   // Imported here: the landing module imports this one to start runs.
   const { prepareWorkspaceDependencies } = await import("./peach-workspace.mjs");
   await withFinalizationSource(record.gitDirectory, record.commit, async (root) => {
-    const env = { ...process.env, PEACH_POST_LAND_BASE: record.base, PEACH_POST_LAND_COMMIT: record.commit };
-    console.log("[post-land] installing dependencies");
-    await prepareWorkspaceDependencies(root, { quiet: true });
+    const env = { ...baseEnv, PEACH_POST_LAND_BASE: record.base, PEACH_POST_LAND_COMMIT: record.commit };
+    // The log, not this process's output: an in-process run shares its host's.
+    await appendFile(record.log, "[post-land] installing dependencies\n");
+    await prepareWorkspaceDependencies(root, { quiet: true, env });
     for (const check of record.checks) {
       const command = `${check.executable} ${check.args.join(" ")}`.trim();
-      console.log(`[post-land] ${command}`);
+      await appendFile(record.log, `[post-land] ${command}\n`);
       const result = await runBoundedProcess({
         executable: check.executable, args: check.args, cwd: path.join(root, check.cwd ?? "."), env,
         timeoutMs: CHECK_TIMEOUT_MS, maxOutputBytes: 4 * 1024 * 1024,
@@ -137,20 +135,18 @@ async function runChecks(record, update) {
   });
 }
 
-/** The detached run: wait for earlier runs, verify, record the outcome. */
-export async function runPostLandVerification(file) {
+/** One run: wait for earlier runs, verify, record the outcome. `env` is the landing's command environment. */
+export async function runPostLandVerification(file, env = process.env) {
   const record = JSON.parse(await readFile(file, "utf8"));
   const update = async (fields) => {
     Object.assign(record, fields);
     await writeFile(file, JSON.stringify(record, null, 2), { mode: 0o600 });
   };
-  // Landings take priority over background verification for the machine.
-  try { setPriority(10); } catch { /* unsupported */ }
   try {
     // Runs queue one at a time on their own slot, never the landing slot.
     await withVerificationSlot(async () => {
       await update({ status: "running", startedAt: new Date().toISOString() });
-      await runChecks(record, update);
+      await runChecks(record, update, env);
     }, { root: path.join(postLandRoot(), "queue"), env: {}, label: `post-land:${record.commit.slice(0, 12)}` });
   } catch (error) {
     await update({ status: "error", reason: error instanceof Error ? error.message : String(error) });

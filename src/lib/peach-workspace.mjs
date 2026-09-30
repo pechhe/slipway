@@ -551,7 +551,7 @@ export async function prepareWorkspaceDependencies(workspacePath, options = {}) 
   const dependencyCommand = await workspaceDependencyCommand(workspacePath);
   if (!dependencyCommand) return { state: "not_required", packageManager: null };
   if (!options.quiet) console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
-  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: !options.quiet });
+  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: !options.quiet, env: options.env });
   if (result.code !== 0) {
     throw new Error(
       `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
@@ -781,7 +781,9 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // One landing at a time holds the machine-wide slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
   const result = await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
-  return postLandFailure ? { ...result, postLandWarning: postLandFailure } : result;
+  // Started outside the landing slot, so an in-process run queues on its own.
+  const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.environment) };
+  return postLandFailure ? { ...started, postLandWarning: postLandFailure } : started;
 }
 
 async function landInSlot(cwd, context, remote, options) {
@@ -801,16 +803,18 @@ async function landInSlot(cwd, context, remote, options) {
   };
   const result = await integrate();
   const completed = await completeLanding(cwd, context, result.artifact.commitId, options);
-  return { ...result, ...completed, ...await startPostLand(cwd, context, result, options.postLandRunner) };
+  return { ...result, ...completed };
 }
 
 /** A fresh integration starts the repository's declared background verification. */
-async function startPostLand(cwd, context, result, runner) {
+async function startPostLand(cwd, context, result, runner, environment) {
   const checks = context.configuration.postLandVerification ?? [];
   if (!result.base || !checks.length) return {};
   try {
     const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
-    const record = await startPostLandVerification({ integrationRoot: context.integration.root, gitDirectory, base: result.base, commit: result.artifact.commitId, checks, runner });
+    const record = await startPostLandVerification({ integrationRoot: context.integration.root, gitDirectory, base: result.base, commit: result.artifact.commitId, checks, runner,
+      // The host's command environment, as for the landing's own verification.
+      ...(environment ? { env: environment() } : {}) });
     return { postLand: { status: record.status, commit: record.commit, log: record.log } };
   } catch (error) {
     // The integration stands; only its background evidence is missing.
@@ -897,5 +901,5 @@ export async function prepareWorkspaceContinuation(task, cwd) {
 
 export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
-// The installed helper bundle is also the detached post-land runner's module.
+// For the installed CLI, which reports runs and is its own detached runner.
 export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";
