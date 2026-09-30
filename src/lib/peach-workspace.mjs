@@ -1,5 +1,5 @@
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
-import { cleanupEligibleAt, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
+import { cleanupEligibleAt, LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { summarizeVerificationFailure } from "./verification-failure.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
@@ -518,7 +518,6 @@ export async function workspaceContinuationState(context) {
     integrationRoot: context.integration.root,
     integrationBranch: context.integrationBranch,
     issueNumber,
-    reopenedArtifactCommitId: metadata?.reopenedFromArtifactCommitId ?? null,
     hasUnintegratedWork: await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch),
     landedArtifactIntegrated: Boolean(
       state?.artifactCommitId
@@ -529,10 +528,8 @@ export async function workspaceContinuationState(context) {
 
 export async function assertWorkspaceMutationAllowed(context) {
   const continuation = await workspaceContinuationState(context);
-  if (["active", "resume_unfinished", "reopened"].includes(continuation.kind)) return;
-  if (continuation.kind === "landed_source") {
-    throw new Error("This workspace source is already landed; make the follow-up change here and land again.");
-  }
+  if (["active", "resume_unfinished"].includes(continuation.kind)) return;
+  if (continuation.kind === "landed_source") throw new Error(LANDED_WORKSPACE_REFUSAL);
   throw new Error(`Historical landing evidence requires explicit recovery before mutation (${continuation.reason})`);
 }
 

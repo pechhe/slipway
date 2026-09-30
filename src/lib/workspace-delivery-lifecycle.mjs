@@ -23,12 +23,18 @@ export function cleanupRetentionReason(state, context, metadata) {
   return null;
 }
 
+/** One refusal for writes into a workspace whose work has landed. The workspace
+ * is finished: follow-up work, including same-task follow-up, starts in a fresh
+ * workspace on the current integration branch, which already contains it. */
+export const LANDED_WORKSPACE_REFUSAL = "This workspace's work has landed, so it is read-only. "
+  + "Make follow-up changes in a fresh workspace on the current integration branch: "
+  + "in Peach the Thread's next message moves it to one; in vanilla Pi the turn ends by moving there.";
+
 /**
  * Decide whether a historical landing still retires this workspace. A prior
  * receipt remains immutable history. New source may continue only when the
  * same workspace and Issue still own it, the exact landed artifact remains
- * integrated, and later unintegrated source is now present, or the owner has
- * explicitly reopened this exact landed artifact for same-task follow-up.
+ * integrated, and later unintegrated source is now present.
  * Writer ownership remains a separate authority check.
  */
 export function workspaceContinuationDisposition(state, evidence) {
@@ -49,9 +55,6 @@ export function workspaceContinuationDisposition(state, evidence) {
   if (evidence.hasUnintegratedWork) {
     return { kind: "resume_unfinished", artifactCommitId: state.artifactCommitId };
   }
-  if (evidence.reopenedArtifactCommitId && evidence.reopenedArtifactCommitId === state.artifactCommitId) {
-    return { kind: "reopened", artifactCommitId: state.artifactCommitId };
-  }
   return { kind: "landed_source", artifactCommitId: state.artifactCommitId };
 }
 
@@ -63,7 +66,7 @@ export async function assertWorkspaceNotRetired(workspaceName) {
     try { state = JSON.parse(await readFile(file, "utf8")); }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     if (state?.workspaceName === workspaceName && state.phase === "landed") {
-      throw new Error("This workspace is a completed delivery. Inspect its history read-only; continue in the next Issue's workspace.");
+      throw new Error(LANDED_WORKSPACE_REFUSAL);
     }
   }
 }
