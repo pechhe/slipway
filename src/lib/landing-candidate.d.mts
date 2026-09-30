@@ -10,6 +10,7 @@ export type CandidateOptions = {
   adapter?: LandingAdapter;
   localOnly?: boolean;
   operationId?: string;
+  environment?: () => NodeJS.ProcessEnv;
   onProgress?: (line: string) => void;
   onStage?: (stage: "rebasing" | "verifying" | "integrating" | "cleaning") => void;
 };

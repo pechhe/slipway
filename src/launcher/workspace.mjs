@@ -85,7 +85,7 @@ try {
       // This CLI, bundled or not, is its own background verification runner.
       postLandRunner: [process.execPath, process.argv[1], "post-land-run"],
     });
-    console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication,
+    console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "post-land-run") {

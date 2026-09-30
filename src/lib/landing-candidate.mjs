@@ -1,4 +1,5 @@
 /** One shared landing candidate transition, used by both native Pi and the host. */
+import { migrationCandidate } from "./migration-candidate.mjs";
 import { resolve } from "node:path";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 
@@ -13,13 +14,14 @@ export async function integrateLandingCandidate(cwd, options, io) {
   if (!direct) await assertDefaultReady(context);
   // The machine-wide slot protects generation and verification. The repository
   // transaction covers only the final identity check and bookmark transition.
-  {
+  const migration = await migrationCandidate(cwd, context, io, options);
+  try {
     options.onStage?.("rebasing");
     await jj(cwd, ["rebase", "--branch", target.changeId, "--onto", context.integrationBranch]);
     await assertStackConflictFree(cwd, context.integrationBranch, target.changeId);
     const base = await revisionFacts(cwd, context.integrationBranch);
     let candidate = await revisionFacts(cwd, target.changeId);
-    if (adapter.finalizeCandidate) candidate = await adapter.finalizeCandidate(candidate, base);
+    candidate = await (adapter.finalizeCandidate?.(candidate, base) ?? migration.finalize(candidate, base));
     const assertIdentity = async () => {
       const drift = await jj(cwd, ["diff", "--from", candidate.commitId, "--to", "@", "--summary"]);
       if ((await revisionFacts(cwd, target.changeId)).commitId !== candidate.commitId || drift)
@@ -44,6 +46,11 @@ export async function integrateLandingCandidate(cwd, options, io) {
     const state = direct ? { artifactCommitId: candidate.commitId } : await readJsonOptional(statePath(context.current.name));
     const cleanup = await finishLanding(context, state, options, io);
     return { context, artifact: candidate, base: base.commitId, verification, ...cleanup };
+  } catch (error) {
+    try { await migration.rollback(); } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], "Landing failed and migration rollback requires reconciliation");
+    }
+    throw error;
   }
 }
 
