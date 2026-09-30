@@ -11,9 +11,9 @@ import { claimSpare } from "./workspace-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
-import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, verificationEvidence, verificationGap } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
@@ -206,29 +206,51 @@ export function parseWorkspaceList(output) {
   return entries;
 }
 
+/** The nearest ancestor holding `.jj`, which is how `jj workspace root` resolves
+ *  a checkout. Every workspace operation starts here, so it avoids a process. */
+export async function jjWorkspaceRoot(cwd) {
+  let dir;
+  try { dir = await realpath(cwd); } catch { return null; }
+  for (;;) {
+    if (await stat(join(dir, ".jj")).then((entry) => entry.isDirectory(), () => false)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+async function sameDirectory(left, right) {
+  if (!left || !right) return false;
+  const [a, b] = await Promise.all([realpath(left).catch(() => resolve(left)), realpath(right).catch(() => resolve(right))]);
+  return a === b;
+}
+
 export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
-  let currentRoot;
+  const currentRoot = await jjWorkspaceRoot(cwd);
+  if (!currentRoot) return null;
+  let output;
   try {
-    currentRoot = await jj(cwd, ["--ignore-working-copy", "workspace", "root"]);
+    output = await jj(cwd, [
+      "--ignore-working-copy",
+      "workspace",
+      "list",
+      "-T",
+      'name ++ "\\t" ++ root ++ "\\t" ++ target.change_id() ++ "\\t" ++ target.commit_id() ++ "\\n"',
+    ]);
   } catch {
     return null;
   }
-  const output = await jj(cwd, [
-    "--ignore-working-copy",
-    "workspace",
-    "list",
-    "-T",
-    'name ++ "\\t" ++ root ++ "\\t" ++ target.change_id() ++ "\\t" ++ target.commit_id() ++ "\\n"',
-  ]);
   const workspaces = parseWorkspaceList(output);
-  // resolve("") means this process cwd, not an unavailable JJ checkout.
-  const current = workspaces.find((entry) => entry.root && resolve(entry.root) === resolve(currentRoot));
+  // An empty root is an unavailable checkout, never this process cwd.
+  let current = null;
+  for (const entry of workspaces) if (await sameDirectory(entry.root, currentRoot)) { current = entry; break; }
   if (!current) throw new Error("Current jj workspace is not registered");
   const integration = workspaces.find((entry) => entry.name === "default");
   if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
   const configuration = integratedBranch ? { integrationBranch: integratedBranch, requiredLocalVerification: [] } : await readConfiguration(integration.root);
+  // An inferred bookmark was just proven to exist.
   const integrationBranch = configuration.integrationBranch ?? (await inferIntegrationBranch(cwd));
-  if (!(await revisionExists(cwd, integrationBranch))) {
+  if (configuration.integrationBranch && !(await revisionExists(cwd, integrationBranch))) {
     throw new Error(
       `Configured integration bookmark '${integrationBranch}' does not exist locally`,
     );
