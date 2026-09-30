@@ -648,10 +648,10 @@ async function writeLandingState(context, artifact, verification, phase = "lande
   });
 }
 
-export async function landingPreview(cwd = process.cwd()) {
+export async function landingPreview(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Not inside a Jujutsu repository");
-  if (context.current.name === "default")
+  if (context.current.name === "default" && !options.allowDefaultWorkspace)
     throw new Error("Landing requires an isolated jj workspace");
   const current = await revisionFacts(cwd, "@");
   const targetRevision = current.empty ? "@-" : "@";
@@ -838,7 +838,10 @@ async function landOwnedWorkspace(cwd, context, options) {
 }
 
 function landOwnedWorkspaceInSlot(cwd, options) {
-  return integrateLandingCandidate(cwd, options, landingIO);
+  return integrateLandingCandidate(cwd, options, {
+    ...landingIO,
+    landingPreview: (root) => landingPreview(root, { allowDefaultWorkspace: options.allowDefaultWorkspace }),
+  });
 }
 
 const landingIO = {

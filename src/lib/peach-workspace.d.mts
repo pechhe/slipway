@@ -98,7 +98,7 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   cleanupPending?: boolean; cleanupError?: string;
   verification: import("./verification-policy.mjs").VerificationEvidence;
 }>;
-export function landingPreview(cwd?: string): Promise<{
+export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?: boolean }): Promise<{
   context: WorkspaceContext;
   targetRevision: string;
   target: { changeId: string; commitId: string };
