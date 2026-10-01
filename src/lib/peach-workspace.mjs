@@ -175,6 +175,12 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
   // An empty root is an unavailable checkout, never this process cwd.
   let current = null;
   for (const entry of workspaces) if (await sameDirectory(entry.root, currentRoot)) { current = entry; break; }
+  if (!current) {
+    // A workspace whose root JJ never recorded is recognised by its target.
+    const target = await jj(cwd, ["--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", "commit_id"]).catch(() => "");
+    const matches = workspaces.filter((entry) => !entry.root && entry.commitId === target);
+    if (matches.length === 1) current = { ...matches[0], root: currentRoot };
+  }
   if (!current) throw new Error("Current jj workspace is not registered");
   const integration = workspaces.find((entry) => entry.name === "default");
   if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
