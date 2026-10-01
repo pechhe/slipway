@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,12 +24,20 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
 };
 
+// A record whose process is gone is removed, so a crashed landing never counts
+// as ahead of a live one and the waiting directory cannot grow without bound.
 const readRecord = async (file) => {
-  try {
-    const record = JSON.parse(await readFile(file, "utf8"));
-    return Number.isInteger(record?.pid) && alive(record.pid) ? record : null;
-  } catch { return null; }
+  let record;
+  try { record = JSON.parse(await readFile(file, "utf8")); } catch { return null; }
+  if (Number.isInteger(record?.pid) && alive(record.pid)) return record;
+  await rm(file, { force: true }).catch(() => {});
+  return null;
 };
+
+/** One slot per integration root, so unrelated repositories never queue on each other. */
+const slotName = (scope) => scope
+  ? `verification-slot-${createHash("sha256").update(String(scope)).digest("hex").slice(0, 16)}`
+  : "verification-slot";
 
 /**
  * Who is ahead of a waiting landing: the holder plus live landings that started
@@ -46,19 +54,22 @@ async function slotQueueStatus(target, waitingDir, own) {
 }
 
 /**
- * Run one landing while holding the machine-wide verification slot, so
- * concurrent landings queue instead of starving each other's timeouts. A
+ * Run one landing while holding the verification slot for its integration root
+ * (`scope`), so concurrent landings of one repository queue instead of starving
+ * each other's timeouts while unrelated repositories land in parallel. A
  * landing holds it from rebase through integration: verifying against a base
- * that another landing advances meanwhile only earns a "bookmark moved" retry. The lock lives under the user's Pi home and goes stale
- * a minute after its holder dies. `onWait` is called when the landing starts
- * waiting and whenever the number of landings ahead of it (or the holder) changes.
+ * that another landing advances meanwhile only earns a "bookmark moved" retry.
+ * The lock lives under the user's Pi home and goes stale a minute after its
+ * holder dies. Without a `scope` the slot is machine-wide. `onWait` is called
+ * when the landing starts waiting and whenever the number of landings ahead of
+ * it (or the holder) changes.
  */
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
   if (environment[VERIFICATION_SLOT_ENV] === "held" || heldSlot.getStore()) return await operation();
   const root = options.root ?? join(homedir(), ".pi", "agent", "workspace-state");
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const target = join(root, "verification-slot");
+  const target = join(root, slotName(options.scope));
   const waitingDir = `${target}.waiting`;
   const own = { id: randomUUID(), pid: process.pid, since: Date.now(), label: options.label ?? null };
   const pollMs = options.pollMs ?? 2_000;

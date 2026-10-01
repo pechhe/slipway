@@ -55,7 +55,7 @@ const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${
 
 /**
  * Run the declared checks in the checkout, bounded in time and output, inside the
- * machine-wide verification slot. `acceptFailure` may classify a failed check as
+ * repository's verification slot. `acceptFailure` may classify a failed check as
  * passing (the host's opt-in unchanged-input baseline); otherwise a failure throws
  * `RequiredVerificationError` with redacted evidence.
  */

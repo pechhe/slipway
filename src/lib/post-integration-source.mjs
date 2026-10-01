@@ -18,6 +18,9 @@ export async function finalizationGit(gitDirectory, args, environment = sanitize
   }
   return result.stdout;
 }
+// A shared, no-checkout clone and a detached checkout take seconds on an idle
+// machine; the bound guards a hung git, not a loaded one.
+const SOURCE_VIEW_STEP_TIMEOUT_MS = 300000;
 export function withFinalizationSource(gitDirectory, commit, operation, environment = sanitizedProcessEnv, abortSignal) {
   return Effect.runPromise(Effect.acquireUseRelease(Effect.tryPromise(() => mkdtemp(path.join(tmpdir(), "peach-post-integration-"))), (directory) => Effect.tryPromise(async () => {
     const root = path.join(directory, "source");
@@ -26,7 +29,7 @@ export function withFinalizationSource(gitDirectory, commit, operation, environm
       args: ["-c", "core.hooksPath=/dev/null", "clone", "--shared", "--no-checkout", "--", gitDirectory, root],
       cwd: directory,
       env: environment(), abortSignal,
-      timeoutMs: 60000,
+      timeoutMs: SOURCE_VIEW_STEP_TIMEOUT_MS,
       maxOutputBytes: 16 * 1024
     });
     if (clone.exitCode !== 0 || clone.timedOut || clone.error || clone.signal)
@@ -36,7 +39,7 @@ export function withFinalizationSource(gitDirectory, commit, operation, environm
       args: ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit],
       cwd: root,
       env: environment(), abortSignal,
-      timeoutMs: 60000,
+      timeoutMs: SOURCE_VIEW_STEP_TIMEOUT_MS,
       maxOutputBytes: 16 * 1024
     });
     if (checkout.exitCode !== 0 || checkout.timedOut || checkout.error || checkout.signal)

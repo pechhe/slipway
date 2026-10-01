@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "vite-plus/test";
@@ -132,4 +132,53 @@ test("a waiting landing reports how many landings are ahead and who holds the sl
     await Promise.all([holder, first, second]);
     // The slot is not first-come-first-served, so only the count shrinking is guaranteed.
     assert.ok(secondStatuses.every((status, index) => index === 0 || status.ahead <= secondStatuses[index - 1]!.ahead));
+  }));
+
+test("landings of different integration roots hold separate slots and run concurrently", () =>
+  withSlotFixture("scope", async ({ root, env, track, hold }) => {
+    const events: string[] = [];
+    const firstHeld = hold();
+    const firstStarted = signal();
+    const first = track(withVerificationSlot(async () => {
+      events.push("repo-a:start");
+      firstStarted.resolve();
+      await firstHeld.promise;
+      events.push("repo-a:end");
+    }, { root, env, pollMs: 10, scope: "/repos/a" }));
+    await firstStarted.promise;
+    await track(withVerificationSlot(async () => { events.push("repo-b:start"); }, {
+      root, env, pollMs: 10, scope: "/repos/b",
+      onWait: () => assert.fail("a landing in another repository must not wait"),
+    }));
+    assert.deepEqual(events, ["repo-a:start", "repo-b:start"]);
+    const sameRepoWaiting = signal<WaitStatus>();
+    const sameRepo = track(withVerificationSlot(async () => { events.push("repo-a:second"); }, {
+      root, env, pollMs: 10, scope: "/repos/a", onWait: sameRepoWaiting.resolve,
+    }));
+    assert.deepEqual(await sameRepoWaiting.promise, { ahead: 1, holder: null });
+    firstHeld.resolve();
+    await Promise.all([first, sameRepo]);
+    assert.deepEqual(events, ["repo-a:start", "repo-b:start", "repo-a:end", "repo-a:second"]);
+  }));
+
+test("a waiting record left by a dead landing is purged and never counted as ahead", () =>
+  withSlotFixture("dead", async ({ root, env, track, hold }) => {
+    const holderHeld = hold();
+    const holding = signal();
+    const holder = track(withVerificationSlot(async () => { holding.resolve(); await holderHeld.promise; }, {
+      root, env, pollMs: 10, scope: "/repos/a", label: "jj:holder",
+    }));
+    await holding.promise;
+    const holderFile = (await readdir(root)).find((name) => name.endsWith(".holder.json"))!;
+    const waitingDir = path.join(root, `${holderFile.replace(/\.holder\.json$/, "")}.waiting`);
+    await mkdir(waitingDir, { recursive: true });
+    await writeFile(path.join(waitingDir, "dead.json"), JSON.stringify({ id: "dead", pid: 2 ** 22 - 1, since: 0, label: "jj:dead" }));
+    const waiting = signal<WaitStatus>();
+    const waiter = track(withVerificationSlot(async () => {}, {
+      root, env, pollMs: 10, scope: "/repos/a", label: "jj:live", onWait: waiting.resolve,
+    }));
+    assert.deepEqual(await waiting.promise, { ahead: 1, holder: "jj:holder" });
+    assert.ok(!(await readdir(waitingDir)).includes("dead.json"), "dead record is removed");
+    holderHeld.resolve();
+    await Promise.all([holder, waiter]);
   }));

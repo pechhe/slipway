@@ -661,12 +661,13 @@ async function assertStackConflictFree(cwd, branch, changeId) {
 }
 
 const waitForLandingSlot = (context, onProgress = (line) => console.log(line)) => ({
+  scope: context.integration.root,
   label: `jj:${context.current.name}`,
   onWait: ({ ahead, holder }) => onProgress(`[verify] waiting for the verification slot: ${ahead} landing${ahead === 1 ? "" : "s"} ahead${holder ? ` (${holder} holds it)` : ""}`),
 });
 
 async function runVerification(context, onProgress = (line) => console.log(line)) {
-  // One landing verifies at a time on this machine; a landing already holds the slot.
+  // One landing of this repository verifies at a time; a landing already holds the slot.
   return await runRequiredVerification({ root: context.current.root, checks: context.configuration.requiredLocalVerification,
     onProgress, slot: waitForLandingSlot(context, onProgress) });
 }
@@ -721,7 +722,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // A failed background run on this repository is the next landing's to see.
   const postLandFailure = describePostLandFailure(await latestPostLandResult(context.integration.root));
   if (postLandFailure) onProgress(`[post-land] ${postLandFailure}`);
-  // One landing at a time holds the machine-wide slot from fetch through push, so
+  // One landing at a time holds this repository's slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
   const result = await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
   // Started outside the landing slot, so an in-process run queues on its own.

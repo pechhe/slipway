@@ -5,6 +5,8 @@ export function withVerificationSlot<T>(
   options?: {
     env?: NodeJS.ProcessEnv;
     root?: string;
+    /** The integration root this landing serializes on; omitted, the slot is machine-wide. */
+    scope?: string;
     pollMs?: number;
     signal?: AbortSignal;
     /** This landing's name, shown to landings waiting behind it as `holder`. */
