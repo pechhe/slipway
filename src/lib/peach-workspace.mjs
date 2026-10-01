@@ -728,9 +728,9 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // Started outside the landing slot, so an in-process run queues on its own.
   const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.environment) };
   // Release other disposable checkouts after every CLI/extension landing. A host
-  // with its own checkout housekeeping (Peach's adapter) releases its records
+  // that owns its checkout records (Peach desktop) opts out and releases them
   // itself. The sweep never fails the landing.
-  if (result.ok && !options.adapter?.finish) await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined);
+  if (result.ok && options.sweepOtherWorkspaces !== false) await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined);
   return postLandFailure ? { ...started, postLandWarning: postLandFailure } : started;
 }
 

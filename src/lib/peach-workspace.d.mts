@@ -96,6 +96,8 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   operationId?: string;
   onStage?: (stage: "preparing" | "rebasing" | "verifying" | "integrating" | "cleaning") => void;
   adapter?: LandingAdapter;
+  /** `false` for a host that releases its own checkout records; others' disposable workspaces are otherwise swept after landing. */
+  sweepOtherWorkspaces?: boolean;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
   /** Detached command that runs one post-land record file (appended), for a caller that exits after landing; long-lived hosts omit it and run in-process. */
