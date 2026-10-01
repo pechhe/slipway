@@ -54,16 +54,23 @@ export async function integrateLandingCandidate(cwd, options, io) {
   }
 }
 
+/** Move the canonical checkout and the landed workspace onto the new integration. */
 export async function finishLanding(context, state, options, io) {
-  const { revisionFacts, jj, statePath } = io;
-  if (options.adapter?.finish) return options.adapter.finish(context, state);
+  const { revisionFacts, jj, statePath, assertDefaultReady } = io;
   try {
-    const currentDefault = await revisionFacts(context.integration.root, "@");
-    if (currentDefault.empty || (context.current.name === "default" && currentDefault.commitId === state.artifactCommitId)) {
-      await jj(context.integration.root, ["new", context.integrationBranch]);
-    } else throw new Error("Canonical checkout has unintegrated changes; preserving both workspaces");
+    await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
+      const currentDefault = await revisionFacts(context.integration.root, "@");
+      if (context.current.name === "default" && currentDefault.commitId === state.artifactCommitId) {
+        await jj(context.integration.root, ["new", context.integrationBranch]);
+        return;
+      }
+      await assertDefaultReady(context);
+      const parent = await revisionFacts(context.integration.root, "@-");
+      const integration = await revisionFacts(context.integration.root, context.integrationBranch);
+      if (parent.commitId !== integration.commitId) await jj(context.integration.root, ["new", context.integrationBranch]);
+    });
     const current = await revisionFacts(context.current.root, "@");
-    if (!current.empty && current.commitId === state.artifactCommitId) await jj(context.current.root, ["new", context.integrationBranch]);
+    if (!current.empty && current.commitId === state.artifactCommitId) await jj(context.current.root, ["new", state.artifactCommitId]);
     state.cleanupPending = false;
     delete state.cleanupError;
   } catch (error) {
@@ -73,4 +80,3 @@ export async function finishLanding(context, state, options, io) {
   if (context.current.name !== "default") await writeWorkspaceJson(statePath(context.current.name), state);
   return { cleanupPending: state.cleanupPending, ...(state.cleanupError ? { cleanupError: state.cleanupError } : {}) };
 }
-

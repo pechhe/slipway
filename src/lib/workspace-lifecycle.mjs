@@ -17,7 +17,9 @@ import {
   workspaceHasUnintegratedWork,
   workspaceMetadata,
 } from "./peach-workspace.mjs";
+import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { cleanupRetentionReason } from "./workspace-delivery-lifecycle.mjs";
+import { archiveIntegratedWorkspaceEvidence } from "./workspace-finalization.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 
 /**
@@ -198,7 +200,13 @@ async function cleanupLandedWorkspaceUnlocked(cwd) {
   );
   if (!integrated)
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
+  // A pending or failed external step keeps the workspace for its land retry.
+  const gitDirectory = await jj(context.integration.root, ["--ignore-working-copy", "git", "root"]);
+  const external = await finalizePostIntegration({ gitDirectory, integratedCommitSha: state.artifactCommitId, inspectOnly: true,
+    readIntegrationTip: () => jj(context.integration.root, ["--ignore-working-copy", "log", "--no-graph", "-r", state.integrationBranch, "-T", "commit_id"]) });
+  if (!external.ok) return { cleaned: false, reason: `post-integration-${external.status}` };
   if (!await artifactPublished(cwd, context, state)) return { cleaned: false, reason: "not-published" };
+  await archiveIntegratedWorkspaceEvidence(gitDirectory, state);
   await jj(context.integration.root, ["--ignore-working-copy", "workspace", "forget", context.current.name]);
   await rm(context.current.root, { recursive: true, force: true });
   await rm(statePath(context.current.name), { force: true });

@@ -2,8 +2,8 @@ import { integrateLandingCandidate, finishLanding } from "./landing-candidate.mj
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { cleanupEligibleAt, LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
-import { summarizeVerificationFailure } from "./verification-failure.mjs";
-import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
+import { runRequiredVerification } from "./required-verification.mjs";
+import { withVerificationSlot } from "./verification-slot.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 
 import { claimSpare } from "./workspace-lifecycle.mjs";
@@ -15,7 +15,7 @@ import { describePostLandFailure, latestPostLandResult, postLandChecks, startPos
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration, runVerificationStages, verificationEvidence, verificationGap } from "./verification-policy.mjs";
+import { normalizeDeclaredVerification } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -597,14 +597,14 @@ async function revisionFacts(cwd, revision) {
 }
 
 async function assertDefaultReady(context) {
-  await assertNoForeignPrimaryWriter(context.integration.root);
+  // Never change files underneath a live Direct checkout writer. A Direct
+  // landing runs from the primary checkout itself and is that single writer.
+  if (context.current.name !== "default") await assertNoForeignPrimaryWriter(context.integration.root);
   const facts = await revisionFacts(context.integration.root, "@");
-  if (facts.conflict)
-    throw new Error("Canonical checkout has conflicts; preserving both workspaces");
-  if (!facts.empty)
-    throw new Error(
-      "Canonical checkout has unintegrated changes; preserve or reconcile them before landing",
-    );
+  if (facts.conflict) throw new Error("Canonical checkout has conflicts; preserving both workspaces");
+  if (!facts.empty) throw new Error("Canonical checkout has unintegrated changes; preserve or reconcile them before landing");
+  if (await jj(context.integration.root, ["log", "-r", `parents(@) ~ ::${context.integrationBranch}`, "--no-graph", "-T", "commit_id"]))
+    throw new Error("Canonical checkout has unintegrated ancestry; preserve it before landing");
   return facts;
 }
 
@@ -655,54 +655,15 @@ async function assertStackConflictFree(cwd, branch, changeId) {
     );
 }
 
-const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`);
-
 const waitForLandingSlot = (context, onProgress = (line) => console.log(line)) => ({
   label: `jj:${context.current.name}`,
   onWait: ({ ahead, holder }) => onProgress(`[verify] waiting for the verification slot: ${ahead} landing${ahead === 1 ? "" : "s"} ahead${holder ? ` (${holder} holds it)` : ""}`),
 });
 
 async function runVerification(context, onProgress = (line) => console.log(line)) {
-  // One landing verifies at a time on this machine; a landing already holds it.
-  return await withVerificationSlot(() => runVerificationInSlot(context, onProgress), waitForLandingSlot(context, onProgress));
-}
-
-async function runVerificationInSlot(context, onProgress) {
-  const env = verificationSlotEnvironment();
-  const checks = context.configuration.requiredLocalVerification;
-  const outcomes = await runVerificationStages(checks, async (check, index) => {
-    if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)) {
-      throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
-    }
-    const args = check.args.map((value) => String(value));
-    const cwd =
-      typeof check.cwd === "string" ? join(context.current.root, check.cwd) : context.current.root;
-    const declared = `${check.executable} ${args.join(" ")}`.trim();
-    if (check.capability) {
-      const probe = check.capability.probe;
-      const probeCwd = typeof probe.cwd === "string" ? join(context.current.root, probe.cwd) : context.current.root;
-      const probeResult = await run(probe.executable, probe.args, { cwd: probeCwd, env });
-      const availability = classifyCapabilityProbe(check.capability, probeResult);
-      if (availability.status === "failed") throw new Error(`Capability probe failed for ${check.capability.id}: ${availability.reason}`);
-      if (availability.status === "unavailable") {
-        onProgress(`[verify ${index + 1}/${checks.length}] unavailable ${check.capability.id}: ${availability.reason}`);
-        return { gap: verificationGap(check.capability, declared, probeResult, availability.reason) };
-      }
-    }
-    onProgress(`[verify ${index + 1}/${checks.length}] ${declared}`);
-    const started = Date.now();
-    const result = await run(check.executable, args, { cwd, env });
-    if (result.code !== 0) {
-      // Verification output is evidence for a failure, not a live feed: inheriting the
-      // terminal paints thousands of test lines over an embedding TUI such as Pi.
-      throw new Error(`Required verification failed: ${declared} (exit ${result.code})\n${summarizeVerificationFailure(result)}`);
-    }
-    onProgress(`[verify ${index + 1}/${checks.length}] passed in ${formatDuration(Date.now() - started)}`);
-    return { passed: declared };
-  });
-  const passed = outcomes.flatMap((outcome) => outcome.passed ? [outcome.passed] : []);
-  const gaps = outcomes.flatMap((outcome) => outcome.gap ? [outcome.gap] : []);
-  return verificationEvidence(passed, gaps, context.configuration.requiredLocalVerification);
+  // One landing verifies at a time on this machine; a landing already holds the slot.
+  return await runRequiredVerification({ root: context.current.root, checks: context.configuration.requiredLocalVerification,
+    onProgress, slot: waitForLandingSlot(context, onProgress) });
 }
 
 async function ensureLandingDescription(cwd, context, target) {
@@ -778,9 +739,8 @@ async function landInSlot(cwd, context, remote, options) {
       return { context, artifact: await revisionFacts(cwd, prior.artifactCommitId), ...cleanup,
         verification: prior.verificationEvidence ?? { status: "passed", passed: prior.verificationCommands ?? [], gaps: [], policyDigest: "legacy" } };
     }
-    if (context.current.name === "default") return landOwnedWorkspace(cwd, context, options);
-    await assertWorkspaceMutationAllowed(context);
-    return landOwnedWorkspace(cwd, context, options);
+    if (context.current.name !== "default") await assertWorkspaceMutationAllowed(context);
+    return landOwnedWorkspace(cwd, options);
   };
   const result = await integrate();
   const completed = await completeLanding(cwd, context, result.artifact.commitId, options);
@@ -838,13 +798,9 @@ export async function artifactPublished(cwd, context, state) {
   return revisionExists(cwd, `${state.artifactCommitId} & ::${context.integrationBranch}@${remote}`);
 }
 
-async function landOwnedWorkspace(cwd, context, options) {
-  // Queue before rebasing: only the slot holder advances the integration branch,
-  // so the base this landing verifies is still current when it integrates.
-  return await withVerificationSlot(() => landOwnedWorkspaceInSlot(cwd, options), waitForLandingSlot(context, options.onProgress));
-}
-
-function landOwnedWorkspaceInSlot(cwd, options) {
+// Called inside landWorkspace's slot: only the slot holder advances the integration
+// branch, so the base this landing verifies is still current when it integrates.
+function landOwnedWorkspace(cwd, options) {
   return integrateLandingCandidate(cwd, options, {
     ...landingIO,
     landingPreview: (root) => landingPreview(root, { allowDefaultWorkspace: options.allowDefaultWorkspace }),
@@ -856,6 +812,11 @@ const landingIO = {
   assertStackConflictFree, revisionFacts, runVerification, writeLandingState,
   readJsonOptional, statePath,
 };
+
+/** Retry the housekeeping of a landing whose integration already stands. */
+export function finishLandedWorkspace(context, state) {
+  return finishLanding(context, state, {}, landingIO);
+}
 
 /** Exact source proof (landed, pushed, nothing new) before a session leaves this workspace. */
 export async function assertWorkspaceDelivered(cwd) {

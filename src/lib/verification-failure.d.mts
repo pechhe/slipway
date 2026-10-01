@@ -5,3 +5,4 @@ export function summarizeVerificationFailure(result: {
   signal?: string | null;
   timedOut?: boolean;
 }): string;
+export function redactVerificationOutput(value: string, checkoutPath?: string): string;

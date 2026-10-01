@@ -112,3 +112,22 @@ export function summarizeVerificationFailure(result) {
   const summary = sections.join("\n");
   return summary.length > MAX_SUMMARY_CHARS ? `${summary.slice(0, MAX_SUMMARY_CHARS - 1)}…` : summary;
 }
+
+/**
+ * Redact sensitive values from verification output before persistence.
+ * Paths containing the checkout root are replaced with [CHECKOUT].
+ */
+export function redactVerificationOutput(value, checkoutPath) {
+  let redacted = value;
+  if (checkoutPath) {
+    const escaped = checkoutPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    redacted = redacted.replace(new RegExp(escaped, "g"), "[CHECKOUT]");
+  }
+  redacted = redacted.replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi, "[REDACTED_PRIVATE_KEY]");
+  redacted = redacted.replace(/(authorization\s*:\s*(?:bearer|basic)\s+|\bbearer\s+)[^\s,;]+/gi, "$1[REDACTED]");
+  redacted = redacted.replace(/\b(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|AIzaSy[A-Za-z0-9_-]{20,})\b/g, "[REDACTED_TOKEN]");
+  redacted = redacted.replace(/\b(?:cookie|set-cookie|session(?:id|_id)?|csrf(?:token|_token)?)\s*[:=]\s*[^\s;]+/gi, (match) => `${match.split(/[:=]/, 1)[0]}=[REDACTED]`);
+  redacted = redacted.replace(/\b([A-Z0-9]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*["']?[^\s"'&,;]+["']?/gi, "$1=[REDACTED]");
+  return redacted;
+}
+

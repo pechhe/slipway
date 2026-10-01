@@ -88,7 +88,6 @@ export type LandingAdapter = {
   repairTarget?: (target: LandingRevision) => Promise<LandingRevision>;
   finalizeCandidate?: (candidate: LandingRevision, base: LandingRevision) => Promise<LandingRevision>;
   verify?: (identity: { base: string; candidate: string }) => Promise<import("./verification-policy.mjs").VerificationEvidence>;
-  finish?: (context: WorkspaceContext, state: Record<string, unknown>) => Promise<{ cleanupPending: boolean; cleanupError?: string }>;
 };
 export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   allowDefaultWorkspace?: boolean;
@@ -132,3 +131,4 @@ export function workspaceContinuationState(
 export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
 
 export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";
+export function finishLandedWorkspace(context: import("./landing-candidate.mjs").CandidateContext, state: Record<string, unknown>): Promise<{ cleanupPending: boolean; cleanupError?: string }>;

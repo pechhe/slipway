@@ -48,7 +48,6 @@ function fixture(direct = false) {
         assert.deepEqual(identity, { base: "base", candidate: "generated" });
         return { status: "passed" as const, passed: [], gaps: [], policyDigest: "policy" };
       },
-      finish: async () => { steps.push("finish"); return { cleanupPending: false }; },
     },
   };
   return { io, options, steps, state, drift: () => { liveBase = "changed"; } };
@@ -57,7 +56,8 @@ function fixture(direct = false) {
 for (const direct of [false, true]) test(`shared candidate transition preserves ${direct ? "Direct" : "isolated"} landing order`, async () => {
   const f = fixture(direct);
   const result = await integrateLandingCandidate("/task", f.options, f.io);
-  assert.deepEqual(f.steps, ["rebase", "generate", "verify", "bookmark", "finish"]);
+  // Housekeeping moves the canonical checkout and the landed workspace onto the integration.
+  assert.deepEqual(f.steps, ["rebase", "generate", "verify", "bookmark", "new", "new"]);
   assert.equal(result.artifact.commitId, "generated");
   assert.equal(result.cleanupPending, false);
   assert.equal(f.state.phase, direct ? undefined : "landed");
