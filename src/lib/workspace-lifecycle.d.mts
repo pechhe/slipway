@@ -14,6 +14,7 @@ export interface RetirementHooks {
 }
 export function cleanupLandedWorkspace(cwd?: string, hooks?: RetirementHooks): Promise<{ cleaned: boolean; reason?: string; paths?: string[] }>;
 export function withinWorkspaceStorage(root: string): Promise<boolean>;
+export function forgetWorkspace(integrationRoot: string, workspaceName: string, workspacePath: string, hooks?: Pick<RetirementHooks, "forget">): Promise<void>;
 export function retireWorkspace(integrationRoot: string, workspace: { name: string; root: string }, hooks?: RetirementHooks): Promise<void>;
 export function removeWorkspace(
   cwd: string,

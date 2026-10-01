@@ -39,24 +39,15 @@ export function revisionFacts(cwd: string, revision: string): Promise<RevisionFa
 /** The integration bookmark when undeclared: `main`, then `master`. */
 export function inferIntegrationBranch(cwd: string): Promise<string>;
 export function findWorkspace(cwd: string, name: string): Promise<WorkspaceEntry>;
-export function findIssueWorkspace(
-  cwd: string,
-  issueNumber: number,
-): Promise<WorkspaceEntry | null>;
 export function attachWorkspaceIssue(
   cwd: string,
   issueNumber: number,
 ): Promise<WorkspaceMetadata & { issueNumber: number }>;
-export function createWorkspace(
-  task: string,
-  cwd?: string,
-  options?: { issueNumber?: number },
-): Promise<WorkspaceContext & { workspacePath: string; reused?: boolean }>;
 export function renameWorkspace(
   cwd: string,
   desired: string,
 ): Promise<{ oldName: string; name: string }>;
-export function projectPrefix(cwd?: string): Promise<string>;
+export function projectPrefix(cwd?: string): Promise<string | null>;
 /** Top-level landing-state sidecar path for a workspace. */
 export function statePath(workspaceName: string): string;
 export function metadataPath(workspaceName: string): string;
@@ -133,6 +124,12 @@ export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?:
 }>;
 export { cleanupLandedWorkspace, provisionSpare, readySpares, removeWorkspace, retireWorkspace, withinWorkspaceStorage, type RetirementHooks } from "./workspace-lifecycle.mjs";
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
+export { createWorkspace, findIssueWorkspace, recoverIssueWorkspace, type CreatedWorkspace, type WorkspaceCreationHooks } from "./workspace-create.mjs";
+import type { createWorkspace } from "./workspace-create.mjs";
+export function assertIssueAvailable(cwd: string, issueNumber: number | undefined, intendedWorkspace: string): Promise<void>;
+export function workspaceSlug(value: string, limit?: number): string;
+export function taskWorkspaceName(project: string, issueNumber?: number | null): string;
+export function parseWorkspaceList(output: string): Array<Pick<WorkspaceEntry, "name" | "root" | "changeId" | "commitId">>;
 
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;
 

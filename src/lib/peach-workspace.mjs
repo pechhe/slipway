@@ -6,7 +6,7 @@ import { runRequiredVerification } from "./required-verification.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 
-import { claimSpare } from "./workspace-lifecycle.mjs";
+import { createWorkspace } from "./workspace-create.mjs";
 import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
@@ -211,7 +211,8 @@ export async function inferIntegrationBranch(cwd) {
   throw new Error("Could not resolve an integration bookmark (tried main/master)");
 }
 
-function slug(value, limit = 40) {
+/** A lowercase, hyphenated workspace-name segment. */
+export function workspaceSlug(value, limit = 40) {
   return (
     value
       .toLowerCase()
@@ -227,32 +228,6 @@ export function metadataPath(workspaceName) {
 
 export async function workspaceMetadata(workspaceName) {
   return await readJsonOptional(metadataPath(workspaceName));
-}
-
-async function writeWorkspaceTaskMetadata(context, task) {
-  const normalized = task.trim().slice(0, 500);
-  if (!normalized || context.current.name === "default") return;
-  await mkdir(METADATA_HOME, { recursive: true, mode: 0o700 });
-  const existing = await workspaceMetadata(context.current.name);
-  await writeFile(
-    metadataPath(context.current.name),
-    JSON.stringify(
-      {
-        ...existing,
-        version: 1,
-        workspaceName: context.current.name,
-        workspacePath: context.current.root,
-        integrationRoot: context.integration.root,
-        implementationChangeId: existing?.implementationChangeId ?? context.current.changeId,
-        workspaceCreationOperationId: existing?.workspaceCreationOperationId ?? await jj(context.current.root, ["op", "log", "--no-graph", "-n", "1", "-T", "id"]),
-        task: normalized,
-        updatedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-    { mode: 0o600 },
-  );
 }
 
 /**
@@ -321,17 +296,6 @@ export async function findWorkspace(cwd, name) {
   return workspace;
 }
 
-export async function findIssueWorkspace(cwd, issueNumber) {
-  const matches = (await listWorkspaces(cwd)).filter(
-    (entry) => entry.metadata?.issueNumber === issueNumber,
-  );
-  if (matches.length > 1)
-    throw new Error(
-      `Issue #${issueNumber} is associated with multiple JJ workspaces; reconcile them explicitly`,
-    );
-  return matches[0] ?? null;
-}
-
 async function moveSidecarFile(directory, oldName, newName, transform) {
   const source = join(directory, `${oldName}.json`);
   try {
@@ -352,7 +316,7 @@ export async function renameWorkspace(cwd, desired) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default")
     throw new Error("Only isolated JJ workspaces can be renamed");
-  const base = slug(desired, 60);
+  const base = workspaceSlug(desired, 60);
   if (!base) throw new Error("New workspace name is empty after normalization");
   const taken = new Set((await listWorkspaces(cwd)).map((workspace) => workspace.name));
   taken.delete(context.current.name);
@@ -399,7 +363,7 @@ export async function issueTitle(repositoryRoot, issueNumber) {
 export async function projectPrefix(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
   if (!context) return null;
-  return slug(basename(context.integration.root), 24);
+  return workspaceSlug(basename(context.integration.root), 24);
 }
 
 export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
@@ -440,7 +404,8 @@ export async function assertWorkspaceMutationAllowed(context) {
   throw new Error(`Historical landing evidence requires explicit recovery before mutation (${continuation.reason})`);
 }
 
-async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
+/** Refuse to associate an Issue already held by another workspace. */
+export async function assertIssueAvailable(cwd, issueNumber, intendedWorkspace) {
   if (!issueNumber) return;
   for (const workspace of await listWorkspaces(cwd)) {
     if (workspace.name === intendedWorkspace || workspace.metadata?.issueNumber !== issueNumber)
@@ -524,52 +489,6 @@ export async function prepareWorkspaceDependencies(workspacePath, options = {}) 
     );
   }
   return { state: "ready", packageManager: dependencyCommand.command };
-}
-
-export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
-  const context = await workspaceContext(cwd);
-  if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
-  return withWorkspaceTransaction(`allocate:${context.integration.root}`, async () => {
-    if (options.issueNumber) {
-      const existing = await findIssueWorkspace(cwd, options.issueNumber);
-      if (existing?.root) {
-        const resumed = await workspaceContext(existing.root);
-        if (!resumed) throw new Error(`Issue #${options.issueNumber} workspace disappeared during resume`);
-        const readiness = await prepareWorkspaceDependencies(existing.root);
-        return { ...resumed, created: false, reused: true, workspacePath: existing.root, readiness };
-      }
-    }
-    return createWorkspaceUnlocked(task, cwd, options);
-  });
-}
-
-async function createWorkspaceUnlocked(task, cwd, options) {
-  const context = await workspaceContext(cwd);
-  if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
-  if (context.current.name !== "default") {
-    await assertWorkspaceMutationAllowed(context);
-    await writeWorkspaceTaskMetadata(context, task);
-    if (options.issueNumber) await attachWorkspaceIssue(context.current.root, options.issueNumber);
-    const readiness = await prepareWorkspaceDependencies(context.current.root);
-    return { ...context, created: false, workspacePath: context.current.root, readiness };
-  }
-  const project = slug(basename(context.integration.root), 24);
-  const name = taskWorkspaceName(project, options.issueNumber);
-  await assertIssueAvailable(cwd, options.issueNumber, name);
-  // A prepared spare is the fast path; otherwise provision synchronously. Never the primary.
-  const claimed = await claimSpare(cwd, name);
-  const workspacePath = claimed?.root ?? join(WORKSPACE_HOME, name);
-  if (!claimed) {
-    await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
-    await jj(cwd, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
-  }
-  const created = await workspaceContext(workspacePath);
-  if (!created || created.current.name !== (claimed?.name ?? name))
-    throw new Error("Created workspace could not be verified");
-  await writeWorkspaceTaskMetadata(created, task);
-  if (options.issueNumber) await attachWorkspaceIssue(workspacePath, options.issueNumber);
-  const readiness = await prepareWorkspaceDependencies(workspacePath);
-  return { ...created, created: true, reused: false, pooled: Boolean(claimed), workspacePath, readiness };
 }
 
 export async function revisionFacts(cwd, revision) {
@@ -870,6 +789,7 @@ export async function prepareWorkspaceContinuation(task, cwd) {
 
 export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, removeWorkspace, retainedWorkspaceMaterial, retireWorkspace, withinWorkspaceStorage } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
+export { createWorkspace, findIssueWorkspace, recoverIssueWorkspace } from "./workspace-create.mjs";
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
 // For the installed CLI, which reports runs and is its own detached runner.
 export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";

@@ -252,6 +252,13 @@ export async function withinWorkspaceStorage(root) {
   return target.startsWith(storage + "/");
 }
 
+/** Unregister a workspace from JJ and delete its checkout, through the host's guarded forget when given. */
+export async function forgetWorkspace(integrationRoot, workspaceName, workspacePath, hooks = {}) {
+  if (hooks.forget) return hooks.forget(integrationRoot, workspaceName, workspacePath);
+  await jj(integrationRoot, ["--ignore-working-copy", "workspace", "forget", workspaceName]);
+  await rm(workspacePath, { recursive: true, force: true });
+}
+
 /**
  * The one retirement step for an isolated checkout: forget it, delete it and its
  * sidecars, then report the release. A host supplies its guarded forget and its
@@ -259,11 +266,7 @@ export async function withinWorkspaceStorage(root) {
  */
 export async function retireWorkspace(integrationRoot, workspace, hooks = {}) {
   const metadata = await workspaceMetadata(workspace.name);
-  if (hooks.forget) await hooks.forget(integrationRoot, workspace.name, workspace.root);
-  else {
-    await jj(integrationRoot, ["--ignore-working-copy", "workspace", "forget", workspace.name]);
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+  await forgetWorkspace(integrationRoot, workspace.name, workspace.root, hooks);
   await rm(metadataPath(workspace.name), { force: true });
   for (const path of landingStatePaths(workspace.name)) await rm(path, { force: true });
   await rm(lockPath(workspace.name), { force: true });
