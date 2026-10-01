@@ -1,13 +1,14 @@
-import { project } from "./support/workspace-project.ts";
+import { jj, project } from "./support/workspace-project.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vite-plus/test";
 import { cleanupLandedWorkspace, createWorkspace, landWorkspace, renameWorkspace, statePath, workspaceMetadata } from "../src/lib/peach-workspace.mjs";
+import { withinWorkspaceStorage } from "../src/lib/workspace-lifecycle.mjs";
 
 const landedPath = (name: string) => join(homedir(), ".pi", "agent", "workspace-state", "landed", `${name}.json`);
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
@@ -64,6 +65,81 @@ test("rename preserves landing state in both locations with its history", async 
     assert.deepEqual(metadata?.previousWorkspaceNames, [oldName]);
     assert.equal((metadata?.workspaceRenameEpochs as Array<{ toName: string }> | undefined)?.at(-1)?.toName, name);
     assert.deepEqual(await cleanupLandedWorkspace(workspace.workspacePath), { cleaned: true });
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+const verifiedLines = async (file: string) => (await readFile(file, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+
+async function waitFor(condition: () => boolean | Promise<boolean>) {
+  while (!await condition()) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+}
+
+test("a prepared landing whose bookmark already moved is finished, not verified again", async () => {
+  const f = await project();
+  try {
+    const workspace = await landed(f, "prepared.txt");
+    // A crash after the bookmark moved leaves only the prepared record, here the legacy one.
+    const state = await readJson(statePath(workspace.current.name));
+    await mkdir(join(landedPath(workspace.current.name), ".."), { recursive: true });
+    await writeFile(landedPath(workspace.current.name), JSON.stringify({ ...state, phase: "prepared", cleanupPending: true }));
+    await rm(statePath(workspace.current.name));
+    const before = await verifiedLines(f.verified);
+
+    const rerun = await landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    assert.equal(rerun.ok, true, JSON.stringify(rerun.publication));
+    assert.equal(rerun.artifact.commitId, state.artifactCommitId);
+    assert.equal(await verifiedLines(f.verified), before, "landed source is not verified again");
+    assert.equal((await readJson(statePath(workspace.current.name))).cleanupPending, false);
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+test("cleanup retries pending housekeeping before releasing a landed workspace", async () => {
+  const f = await project();
+  try {
+    const workspace = await landed(f, "pending.txt");
+    const state = await readJson(statePath(workspace.current.name));
+    await writeFile(statePath(workspace.current.name), JSON.stringify({ ...state, cleanupPending: true, cleanupError: "interrupted" }));
+    assert.deepEqual(await cleanupLandedWorkspace(workspace.workspacePath), { cleaned: true });
+    assert.equal(existsSync(workspace.workspacePath), false);
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+test("a landing and a cleanup of the same workspace serialize on one key", async () => {
+  const f = await project({ verify: (verified) => `touch "$PEACH_TEST_GATE.started"; while [ ! -f "$PEACH_TEST_GATE" ]; do sleep 0.05; done; pwd >> ${JSON.stringify(verified)}` });
+  const gate = join(f.root, "gate");
+  process.env.PEACH_TEST_GATE = gate;
+  try {
+    const workspace = await createWorkspace("serialized", f.repo);
+    await writeFile(join(workspace.workspacePath, "serialized.txt"), "serialized\n");
+    const landing = landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    await waitFor(() => existsSync(`${gate}.started`));
+    const cleanup = cleanupLandedWorkspace(workspace.workspacePath);
+    await writeFile(gate, "");
+    assert.equal((await landing).ok, true);
+    // Run during verification, cleanup would have found no landing; it waited for the integration instead.
+    assert.deepEqual(await cleanup, { cleaned: true });
+  } finally {
+    delete process.env.PEACH_TEST_GATE;
+    await f.dispose();
+  }
+}, 120_000);
+
+test("cleanup refuses a checkout outside workspace storage", async () => {
+  const f = await project();
+  try {
+    const outside = join(f.root, "outside");
+    jj(f.repo, ["workspace", "add", "--name", "outside", outside]);
+    await writeFile(join(outside, "outside.txt"), "outside\n");
+    assert.equal((await landWorkspace(outside, { onProgress: () => {} })).ok, true);
+    assert.equal(await withinWorkspaceStorage(outside), false);
+    assert.deepEqual(await cleanupLandedWorkspace(outside), { cleaned: false, reason: "outside-workspace-storage" });
+    assert.ok(existsSync(join(outside, "outside.txt")));
   } finally {
     await f.dispose();
   }

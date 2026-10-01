@@ -1,18 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
   artifactPublished,
+  finishLandedWorkspace,
+  landingStatePaths,
   listWorkspaces,
   lockPath,
   metadataPath,
   prepareWorkspaceDependencies,
+  readLandingState,
   renameWorkspace,
   revisionExists,
   run,
-  statePath,
   workspaceContext,
   workspaceHasUnintegratedWork,
   workspaceMetadata,
@@ -164,54 +166,108 @@ export async function uniqueUntrackedMaterial(root, limit = 5, generated = []) {
   return found;
 }
 
-/** Release a delivered checkout: integrated, published, no new or unique material. */
-export async function cleanupLandedWorkspace(cwd = process.cwd()) {
+/**
+ * Release a delivered checkout: integrated, published, no new or unique material.
+ * Serialized with landing and host writes on the workspace's `writer:` key, which
+ * is not reentrant: never call this while holding that key. `hooks` lets a host
+ * supply its guarded forget, lifecycle event and command environment.
+ */
+export async function cleanupLandedWorkspace(cwd = process.cwd(), hooks = {}) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
-  return withWorkspaceTransaction(`cleanup:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd));
+  return withWorkspaceTransaction(`writer:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd, hooks));
 }
 
-async function cleanupLandedWorkspaceUnlocked(cwd) {
+async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   const context = await workspaceContext(cwd);
-  if (!context || context.current.name === "default")
-    return { cleaned: false, reason: "not-isolated" };
-  let state;
-  try {
-    state = JSON.parse(await readFile(statePath(context.current.name), "utf8"));
-  } catch {
-    return { cleaned: false, reason: "not-landed" };
-  }
-  if (
-    resolve(state.workspacePath) !== resolve(context.current.root) ||
-    state.workspaceName !== context.current.name
-  ) {
+  if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
+  const state = await readLandingState(context.current.name);
+  if (!state) return { cleaned: false, reason: "not-landed" };
+  if (resolve(state.workspacePath) !== resolve(context.current.root) || state.workspaceName !== context.current.name) {
     throw new Error("Landing state does not match the current workspace");
   }
+  // Follow-up work on top of the landed artifact is never deleted.
   if (await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch)) {
     return { cleaned: false, reason: "new-unlanded-work" };
   }
   const unique = await retainedWorkspaceMaterial(context.current.root, context.integration.root);
   if (unique.length) return { cleaned: false, reason: "unique-files", paths: unique };
-  const retention = cleanupRetentionReason(state, context, await workspaceMetadata(context.current.name));
+  // Pending housekeeping is retried below; every other retention reason holds.
+  const retention = cleanupRetentionReason({ ...state, cleanupPending: false }, context, await workspaceMetadata(context.current.name));
   if (retention) return { cleaned: false, reason: retention };
-  const integrated = await revisionExists(
-    context.integration.root,
-    `${state.artifactCommitId} & ::${state.integrationBranch}`,
-  );
-  if (!integrated)
+  if (!await revisionExists(context.integration.root, `${state.artifactCommitId} & ::${state.integrationBranch}`))
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
+  if (state.cleanupPending && (await finishLandedWorkspace(context, state)).cleanupPending) {
+    return { cleaned: false, reason: "housekeeping-pending" };
+  }
   // A pending or failed external step keeps the workspace for its land retry.
   const gitDirectory = await jj(context.integration.root, ["--ignore-working-copy", "git", "root"]);
   const external = await finalizePostIntegration({ gitDirectory, integratedCommitSha: state.artifactCommitId, inspectOnly: true,
-    readIntegrationTip: () => jj(context.integration.root, ["--ignore-working-copy", "log", "--no-graph", "-r", state.integrationBranch, "-T", "commit_id"]) });
+    readIntegrationTip: () => jj(context.integration.root, ["--ignore-working-copy", "log", "--no-graph", "-r", state.integrationBranch, "-T", "commit_id"]),
+    ...(hooks.environment ? { environment: hooks.environment } : {}) });
   if (!external.ok) return { cleaned: false, reason: `post-integration-${external.status}` };
   if (!await artifactPublished(cwd, context, state)) return { cleaned: false, reason: "not-published" };
+  // Cleanup deletes only checkouts beneath Peach workspace storage.
+  if (!await withinWorkspaceStorage(context.current.root)) return { cleaned: false, reason: "outside-workspace-storage" };
   await archiveIntegratedWorkspaceEvidence(gitDirectory, state);
-  await jj(context.integration.root, ["--ignore-working-copy", "workspace", "forget", context.current.name]);
-  await rm(context.current.root, { recursive: true, force: true });
-  await rm(statePath(context.current.name), { force: true });
-  await rm(metadataPath(context.current.name), { force: true });
-  await rm(lockPath(context.current.name), { force: true });
+  await retireWorkspace(context.integration.root, context.current, hooks);
   return { cleaned: true };
+}
+
+export async function removeWorkspace(cwd, workspaceName, options = {}) {
+  const context = await workspaceContext(cwd);
+  if (!context) throw new Error("Not inside a Jujutsu repository");
+  if (workspaceName === "default")
+    throw new Error("The canonical default workspace cannot be removed");
+  if (workspaceName === context.current.name)
+    throw new Error("Cannot remove the workspace hosting this Pi process");
+  return withWorkspaceTransaction(`writer:${workspaceName}`, async () => {
+    const target = (await listWorkspaces(cwd)).find((workspace) => workspace.name === workspaceName);
+    if (!target?.root) throw new Error(`Unknown or unavailable JJ workspace: ${workspaceName}`);
+    if (!await withinWorkspaceStorage(target.root))
+      throw new Error("Refusing to remove a workspace outside ~/.pi/workspaces");
+    const metadata = await workspaceMetadata(workspaceName);
+    const hasWork = await workspaceHasUnintegratedWork(target.root, context.integrationBranch).catch(
+      () => true,
+    );
+    if (hasWork && options.allowWork !== true)
+      throw new Error(
+        `jj:${workspaceName} contains unlanded work; explicit deletion confirmation is required`,
+      );
+    if (metadata?.issueNumber && options.allowIssue !== true)
+      throw new Error(
+        `jj:${workspaceName} is attached to Issue #${metadata.issueNumber}; explicit deletion confirmation is required`,
+      );
+    await retireWorkspace(context.integration.root, { name: workspaceName, root: target.root });
+    return { workspaceName, hasWork, issueNumber: metadata?.issueNumber ?? null };
+  });
+}
+
+/** Whether a checkout lives beneath Peach workspace storage, the only place cleanup deletes. */
+export async function withinWorkspaceStorage(root) {
+  const [storage, target] = await Promise.all([
+    realpath(WORKSPACE_HOME).catch(() => resolve(WORKSPACE_HOME)),
+    realpath(root).catch(() => resolve(root)),
+  ]);
+  return target.startsWith(storage + "/");
+}
+
+/**
+ * The one retirement step for an isolated checkout: forget it, delete it and its
+ * sidecars, then report the release. A host supplies its guarded forget and its
+ * lifecycle event; the default forgets through JJ and removes the directory.
+ */
+export async function retireWorkspace(integrationRoot, workspace, hooks = {}) {
+  const metadata = await workspaceMetadata(workspace.name);
+  if (hooks.forget) await hooks.forget(integrationRoot, workspace.name, workspace.root);
+  else {
+    await jj(integrationRoot, ["--ignore-working-copy", "workspace", "forget", workspace.name]);
+    await rm(workspace.root, { recursive: true, force: true });
+  }
+  await rm(metadataPath(workspace.name), { force: true });
+  for (const path of landingStatePaths(workspace.name)) await rm(path, { force: true });
+  await rm(lockPath(workspace.name), { force: true });
+  const issueNumber = Number.isInteger(metadata?.issueNumber) && metadata.issueNumber > 0 ? metadata.issueNumber : null;
+  hooks.onReleased?.({ workspaceName: workspace.name, projectRoot: integrationRoot, issueNumber });
 }
 

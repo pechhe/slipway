@@ -59,11 +59,12 @@ export function metadataPath(workspaceName: string): string;
 export function workspaceMetadata(workspaceName: string): Promise<WorkspaceMetadata | null>;
 /** Legacy per-workspace owner record; a live `pid` in it marks the workspace in use. */
 export function lockPath(workspaceName: string): string;
-export function removeWorkspace(
-  cwd: string,
-  workspaceName: string,
-  options?: { allowWork?: boolean; allowIssue?: boolean },
-): Promise<void>;
+/** Landing-state sidecar paths: the current top-level file, then the legacy `landed/` file. */
+export function landingStatePaths(workspaceName: string): [string, string];
+/** A landing record from either sidecar; an interrupted `prepared` record whose artifact is integrated is promoted to `landed` unless `readOnly`. */
+export function readLandingState(workspaceName: string, options?: { readOnly?: boolean }): Promise<Record<string, unknown> & {
+  version: number; phase?: "prepared" | "landed"; workspaceName: string; workspacePath: string; integrationBranch: string; artifactCommitId: string;
+} | null>;
 /** Result of the push step that ends every landing. */
 export interface LandingPublication {
   ok: boolean;
@@ -124,7 +125,7 @@ export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?:
   target: { changeId: string; commitId: string };
   stat: string;
 }>;
-export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs";
+export { cleanupLandedWorkspace, provisionSpare, readySpares, removeWorkspace, retireWorkspace, withinWorkspaceStorage, type RetirementHooks } from "./workspace-lifecycle.mjs";
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;

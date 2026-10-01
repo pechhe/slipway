@@ -14,7 +14,7 @@ export const jj = (cwd: string, args: string[]) => execFileSync("jj", ["--color=
 
 // A disposable project with a bare `origin`, landing policy and a verification
 // check that records which checkout it verified.
-export async function project(options: { ignore?: string; generatedPaths?: unknown } = {}) {
+export async function project(options: { ignore?: string; generatedPaths?: unknown; verify?: (verified: string) => string } = {}) {
   process.env.JJ_USER ??= "Fixture";
   process.env.JJ_EMAIL ??= "fixture@example.com";
   const root = await realpath(await mkdtemp(join(tmpdir(), "peach-rollover-")));
@@ -32,7 +32,7 @@ export async function project(options: { ignore?: string; generatedPaths?: unkno
   await writeFile(join(repo, ".peach", "execution.json"), JSON.stringify({
     version: 1, integrationBranch: "main",
     sourcePublication: { version: 1, mode: "required", remote: "origin" },
-    requiredLocalVerification: [{ executable: "sh", args: ["-c", `pwd >> ${JSON.stringify(verified)}`] }],
+    requiredLocalVerification: [{ executable: "sh", args: ["-c", options.verify?.(verified) ?? `pwd >> ${JSON.stringify(verified)}`] }],
     ...(options.generatedPaths === undefined ? {} : { generatedPaths: options.generatedPaths }),
   }));
   git(["add", "."]);

@@ -1,8 +1,8 @@
 import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { inspectWorkspaces, lockPath, removeWorkspace, run, workspaceContext } from "./peach-workspace.mjs";
-import { cleanupLandedWorkspace, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs";
+import { inspectWorkspaces, lockPath, run, workspaceContext } from "./peach-workspace.mjs";
+import { cleanupLandedWorkspace, removeWorkspace, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs";
 
 /**
  * Disposable-workspace housekeeping shared by every surface that lands or

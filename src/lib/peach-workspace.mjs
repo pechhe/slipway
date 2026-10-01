@@ -301,7 +301,7 @@ export async function inspectWorkspaces(cwd = process.cwd()) {
         workspace.name === "default"
           ? false
           : await workspaceHasUnintegratedWork(workspace.root, context.integrationBranch).catch(() => true),
-      landed: Boolean(await readJsonOptional(statePath(workspace.name))),
+      landed: Boolean(await readLandingState(workspace.name, { readOnly: true })),
     })),
   );
 }
@@ -314,39 +314,6 @@ export async function inspectWorkspace(cwd = process.cwd()) {
     workspaces.find((workspace) => workspace.root && resolve(workspace.root) === resolve(context.current.root)) ??
     null
   );
-}
-
-export async function removeWorkspace(cwd, workspaceName, options = {}) {
-  const context = await workspaceContext(cwd);
-  if (!context) throw new Error("Not inside a Jujutsu repository");
-  if (workspaceName === "default")
-    throw new Error("The canonical default workspace cannot be removed");
-  if (workspaceName === context.current.name)
-    throw new Error("Cannot remove the workspace hosting this Pi process");
-  const target = (await listWorkspaces(cwd)).find((workspace) => workspace.name === workspaceName);
-  if (!target?.root) throw new Error(`Unknown or unavailable JJ workspace: ${workspaceName}`);
-  const workspaceRoot = resolve(target.root);
-  const storageRoot = resolve(WORKSPACE_HOME) + "/";
-  if (!workspaceRoot.startsWith(storageRoot))
-    throw new Error("Refusing to remove a workspace outside ~/.pi/workspaces");
-  const metadata = await workspaceMetadata(workspaceName);
-  const hasWork = await workspaceHasUnintegratedWork(target.root, context.integrationBranch).catch(
-    () => true,
-  );
-  if (hasWork && options.allowWork !== true)
-    throw new Error(
-      `jj:${workspaceName} contains unlanded work; explicit deletion confirmation is required`,
-    );
-  if (metadata?.issueNumber && options.allowIssue !== true)
-    throw new Error(
-      `jj:${workspaceName} is attached to Issue #${metadata.issueNumber}; explicit deletion confirmation is required`,
-    );
-  await jj(context.integration.root, ["--ignore-working-copy", "workspace", "forget", workspaceName]);
-  await rm(workspaceRoot, { recursive: true, force: true });
-  await rm(metadataPath(workspaceName), { force: true });
-  await rm(statePath(workspaceName), { force: true });
-  await rm(lockPath(workspaceName), { force: true });
-  return { workspaceName, hasWork, issueNumber: metadata?.issueNumber ?? null };
 }
 
 export async function findWorkspace(cwd, name) {
@@ -449,14 +416,9 @@ export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBra
   return Boolean(output.trim());
 }
 
-async function landingStateForContinuation(workspaceName) {
-  return await readJsonOptional(statePath(workspaceName))
-    ?? await readJsonOptional(join(STATE_HOME, "landed", `${workspaceName}.json`));
-}
-
 export async function workspaceContinuationState(context) {
   if (!context || context.current.name === "default") return { kind: "active" };
-  const state = await landingStateForContinuation(context.current.name);
+  const state = await readLandingState(context.current.name);
   const metadata = await workspaceMetadata(context.current.name);
   const issueNumber = typeof metadata?.issueNumber === "number" ? metadata.issueNumber : null;
   return workspaceContinuationDisposition(state, {
@@ -639,6 +601,36 @@ export function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
 
+/** Landing-state sidecars for a workspace: the current top-level path, then the legacy `landed/` path. */
+export function landingStatePaths(workspaceName) {
+  return [statePath(workspaceName), join(LANDED_HOME, `${workspaceName}.json`)];
+}
+
+function isLandingState(value) {
+  return Boolean(value && value.version === 1 && typeof value.workspaceName === "string" && typeof value.workspacePath === "string"
+    && typeof value.integrationBranch === "string" && typeof value.artifactCommitId === "string");
+}
+
+/**
+ * A workspace's landing record from either sidecar. A `prepared` record whose
+ * artifact the integration bookmark already contains was interrupted after the
+ * bookmark moved; it is promoted to `landed` (unless `readOnly`) so the next land
+ * finishes housekeeping instead of verifying again. Otherwise it is not a landing.
+ */
+export async function readLandingState(workspaceName, options = {}) {
+  for (const path of landingStatePaths(workspaceName)) {
+    const state = await readJsonOptional(path);
+    if (!isLandingState(state)) continue;
+    if (state.phase === "prepared" && !options.readOnly) {
+      if (!state.integrationRoot || !await revisionExists(state.integrationRoot, `${state.artifactCommitId} & ::${state.integrationBranch}`)) return null;
+      state.phase = "landed";
+      await writeWorkspaceJson(path, state);
+    }
+    return state;
+  }
+  return null;
+}
+
 async function writeLandingState(context, artifact, verification, phase = "landed", localOnly, operationId) {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
   const metadata = await workspaceMetadata(context.current.name);
@@ -748,7 +740,9 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   if (postLandFailure) onProgress(`[post-land] ${postLandFailure}`);
   // One landing at a time holds this repository's slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
-  const result = await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
+  // The workspace's writer key serializes this landing with cleanup of the same checkout.
+  const result = await withVerificationSlot(() => withWorkspaceTransaction(`writer:${context.current.name}`, () => landInSlot(cwd, context, remote, options)),
+    waitForLandingSlot(context, onProgress));
   // Started outside the landing slot, so an in-process run queues on its own.
   const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.environment) };
   // Release other disposable checkouts after every CLI/extension landing. A host
@@ -762,7 +756,7 @@ async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
   const integrate = async () => {
-    const prior = await readJsonOptional(statePath(context.current.name));
+    const prior = await readLandingState(context.current.name);
     if (prior?.phase === "landed" && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)
       && await revisionExists(cwd, `${prior.artifactCommitId} & ::${context.integrationBranch}`)) {
       const cleanup = await finishLanding(context, prior, options, landingIO);
@@ -852,7 +846,7 @@ export function finishLandedWorkspace(context, state) {
 export async function assertWorkspaceDelivered(cwd) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") throw new Error("No current Issue workspace");
-  const state = await readJsonOptional(statePath(context.current.name));
+  const state = await readLandingState(context.current.name);
   const metadata = await workspaceMetadata(context.current.name);
   if (!state || state.phase !== "landed" || state.workspaceName !== context.current.name
     || state.workspacePath !== context.current.root || state.integrationRoot !== context.integration.root
@@ -874,7 +868,7 @@ export async function prepareWorkspaceContinuation(task, cwd) {
   return createWorkspace(task, context.integration.root);
 }
 
-export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
+export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, removeWorkspace, retainedWorkspaceMaterial, retireWorkspace, withinWorkspaceStorage } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
 // For the installed CLI, which reports runs and is its own detached runner.
