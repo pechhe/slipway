@@ -33,7 +33,11 @@ export function workspaceContext(cwd?: string, integratedBranch?: string): Promi
 export function jjWorkspaceRoot(cwd: string): Promise<string | null>;
 export function inspectWorkspaces(cwd?: string): Promise<WorkspaceEntry[]>;
 export function inspectWorkspace(cwd?: string): Promise<WorkspaceEntry | null>;
-export function listWorkspaces(cwd?: string): Promise<WorkspaceEntry[]>;
+export function listWorkspaces(cwd?: string, options?: { readOnly?: boolean }): Promise<WorkspaceEntry[]>;
+export type RevisionFacts = { changeId: string; commitId: string; empty: boolean; conflict: boolean; description: string };
+export function revisionFacts(cwd: string, revision: string): Promise<RevisionFacts>;
+/** The integration bookmark when undeclared: `main`, then `master`. */
+export function inferIntegrationBranch(cwd: string): Promise<string>;
 export function findWorkspace(cwd: string, name: string): Promise<WorkspaceEntry>;
 export function findIssueWorkspace(
   cwd: string,
@@ -124,7 +128,7 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
 export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?: boolean }): Promise<{
   context: WorkspaceContext;
   targetRevision: string;
-  target: { changeId: string; commitId: string };
+  target: RevisionFacts;
   stat: string;
 }>;
 export { cleanupLandedWorkspace, provisionSpare, readySpares, removeWorkspace, retireWorkspace, withinWorkspaceStorage, type RetirementHooks } from "./workspace-lifecycle.mjs";

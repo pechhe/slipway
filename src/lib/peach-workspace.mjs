@@ -165,7 +165,7 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
     const matches = workspaces.filter((entry) => !entry.root && entry.commitId === target);
     if (matches.length === 1) current = { ...matches[0], root: currentRoot };
   }
-  if (!current) throw new Error("Current jj workspace is not registered");
+  if (!current) return null;
   const integration = workspaces.find((entry) => entry.name === "default");
   if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
   const configuration = integratedBranch ? { integrationBranch: integratedBranch, requiredLocalVerification: [] } : await readConfiguration(integration.root);
@@ -204,7 +204,7 @@ export async function revisionExists(cwd, revision) {
   return result.code === 0 && result.stdout.includes("ok");
 }
 
-async function inferIntegrationBranch(cwd) {
+export async function inferIntegrationBranch(cwd) {
   for (const candidate of ["main", "master"]) {
     if (await revisionExists(cwd, candidate)) return candidate;
   }
@@ -255,7 +255,12 @@ async function writeWorkspaceTaskMetadata(context, task) {
   );
 }
 
-export async function listWorkspaces(cwd = process.cwd()) {
+/**
+ * Every JJ workspace of the repository with its metadata. Metadata whose recorded
+ * name or path no longer matches JJ (after a rename or move) is corrected unless
+ * `readOnly`; a workspace JJ recorded without a root falls back to its metadata path.
+ */
+export async function listWorkspaces(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) return [];
   const output = await jj(cwd, [
@@ -266,10 +271,20 @@ export async function listWorkspaces(cwd = process.cwd()) {
     'name ++ "\\t" ++ root ++ "\\t" ++ target.change_id() ++ "\\t" ++ target.commit_id() ++ "\\n"',
   ]);
   return await Promise.all(
-    parseWorkspaceList(output).map(async (workspace) => ({
-      ...workspace,
-      metadata: await workspaceMetadata(workspace.name),
-    })),
+    parseWorkspaceList(output).map(async (workspace) => {
+      let metadata = await workspaceMetadata(workspace.name);
+      if (metadata && workspace.root && (metadata.workspaceName !== workspace.name
+        || typeof metadata.workspacePath !== "string" || resolve(metadata.workspacePath) !== resolve(workspace.root))) {
+        metadata = { ...metadata, workspaceName: workspace.name, workspacePath: workspace.root };
+        if (!options.readOnly) {
+          await mkdir(METADATA_HOME, { recursive: true, mode: 0o700 });
+          await writeFile(metadataPath(workspace.name), JSON.stringify(metadata, null, 2), { mode: 0o600 });
+        }
+      }
+      const metadataRoot = typeof metadata?.workspacePath === "string"
+        && await stat(metadata.workspacePath).then(() => true, () => false) ? metadata.workspacePath : "";
+      return { ...workspace, root: workspace.root || metadataRoot, metadata };
+    }),
   );
 }
 
@@ -557,7 +572,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   return { ...created, created: true, reused: false, pooled: Boolean(claimed), workspacePath, readiness };
 }
 
-async function revisionFacts(cwd, revision) {
+export async function revisionFacts(cwd, revision) {
   const output = await jj(cwd, ["log", "-r", revision, "--no-graph", "-T",
     'change_id ++ "\\t" ++ commit_id ++ "\\t" ++ empty ++ "\\t" ++ conflict ++ "\\t" ++ description.first_line() ++ "\\n"']);
   const [changeId, commitId, empty, conflict, description = ""] = output.split("\t");
