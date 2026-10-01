@@ -18,6 +18,7 @@ import {
   latestPostLandResult,
   runPostLandVerification,
 } from "../lib/peach-workspace.mjs";
+import { landingGuardDecision } from "../lib/landing-guard.mjs";
 import { execFileSync } from "node:child_process";
 import { setPriority } from "node:os";
 
@@ -99,6 +100,12 @@ try {
     // verification. Landings take priority over it for the machine.
     try { setPriority(10); } catch { /* unsupported */ }
     await runPostLandVerification(rest[0]);
+  } else if (command === "guard") {
+    // Claude Code PreToolUse hook: reads the tool call on stdin, prints a deny decision.
+    let input = "";
+    for await (const chunk of process.stdin) input += chunk;
+    const decision = await landingGuardDecision(input.trim() ? JSON.parse(input) : {});
+    if (decision) console.log(JSON.stringify(decision));
   } else if (command === "cleanup") {
     const result = await cleanupLandedWorkspace();
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${describeRetention(result)}.`);
