@@ -7,7 +7,8 @@ import path from "node:path";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { exactPostIntegrationApproval, postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
-import { finalizationCwd, readExactExecutionPolicy, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+import { checkoutCwd } from "./checkout-cwd.mjs";
+import { readExactExecutionPolicy, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
 
 class HistoricalMigrationFailure extends Error {}
 
@@ -215,7 +216,7 @@ export async function finalizePostIntegration(input) {
         const probe = await runBoundedProcess({
           executable: policy.targetProbe.executable,
           args: policy.targetProbe.args,
-          cwd: await finalizationCwd(root, policy.targetProbe.cwd),
+          cwd: await checkoutCwd(root, policy.targetProbe.cwd, "Finalization target probe"),
           env: environment, abortSignal,
           timeoutMs: 30000,
           maxOutputBytes: 16 * 1024
@@ -231,7 +232,7 @@ export async function finalizePostIntegration(input) {
         const result = await runBoundedProcess({
           executable: policy.command.executable,
           args: policy.command.args,
-          cwd: await finalizationCwd(root, policy.command.cwd),
+          cwd: await checkoutCwd(root, policy.command.cwd, "Finalization command"),
           env: environment, abortSignal,
           timeoutMs: policy.timeoutMs,
           maxOutputBytes: 16 * 1024,

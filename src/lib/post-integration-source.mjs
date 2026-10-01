@@ -51,14 +51,6 @@ export function withFinalizationSource(gitDirectory, commit, operation, environm
     return operation(root);
   }), (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true }))));
 }
-export async function finalizationCwd(root, relative) {
-  const canonicalRoot = await realpath(root);
-  const cwd = await realpath(path.join(root, relative));
-  if (cwd !== canonicalRoot && !cwd.startsWith(`${canonicalRoot}${path.sep}`))
-    throw new Error("Finalization cwd escapes exact source view");
-  return cwd;
-}
-
 
 /** Read a policy from a proven object, never the caller's working files. No external effects. */
 export async function readExactExecutionPolicy(selectedGitDirectory, commit, environment = sanitizedProcessEnv) {

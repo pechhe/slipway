@@ -1,7 +1,6 @@
 /** Late-bound migration source belongs to the shared, serialized landing path. */
-import { realpath } from "node:fs/promises";
-import { resolve, sep } from "node:path";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
+import { checkoutCwd } from "./checkout-cwd.mjs";
 import { verificationSlotEnvironment } from "./verification-slot.mjs";
 
 const matches = (roots, file) => roots.some(root => file === root || file.startsWith(root + "/"));
@@ -24,9 +23,7 @@ export async function migrationCandidate(cwd, context, io, options = {}) {
       generated = { semantic: candidate, originalWorkingCopy, finalized: null, base };
       await io.jj(cwd, ["edit", candidate.changeId]);
       const run = async declaration => {
-        const root = await realpath(context.current.root);
-        const commandRoot = await realpath(resolve(root, declaration.cwd ?? "."));
-        if (commandRoot !== root && !commandRoot.startsWith(root + sep)) throw new Error("Migration command cwd escapes workspace");
+        const commandRoot = await checkoutCwd(context.current.root, declaration.cwd, "Migration command");
         options.onProgress?.(`[migration] ${declaration.executable} ${declaration.args.join(" ")}`);
         const result = await (options.runCommand ?? runBoundedProcess)({ ...declaration, cwd: commandRoot, timeoutMs: 3600000, maxOutputBytes: 65536, env: verificationSlotEnvironment((options.environment ?? sanitizedProcessEnv)()) });
         if (result.exitCode !== 0 || result.timedOut || result.cancelled || result.signal || result.error)

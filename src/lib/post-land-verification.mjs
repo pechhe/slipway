@@ -10,6 +10,7 @@ import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/pro
 import { homedir } from "node:os";
 import path from "node:path";
 import { runBoundedProcess } from "./bounded-process.mjs";
+import { checkoutCwd } from "./checkout-cwd.mjs";
 import { withFinalizationSource } from "./post-integration-source.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
 
@@ -111,7 +112,7 @@ async function runChecks(record, update, baseEnv) {
       const command = `${check.executable} ${check.args.join(" ")}`.trim();
       await appendFile(record.log, `[post-land] ${command}\n`);
       const result = await runBoundedProcess({
-        executable: check.executable, args: check.args, cwd: path.join(root, check.cwd ?? "."), env,
+        executable: check.executable, args: check.args, cwd: await checkoutCwd(root, check.cwd, `Post-land check "${command}"`), env,
         timeoutMs: CHECK_TIMEOUT_MS, maxOutputBytes: 4 * 1024 * 1024,
       });
       await appendFile(record.log, `${result.stdout}${result.stderr}\n`);

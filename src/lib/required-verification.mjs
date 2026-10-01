@@ -1,6 +1,7 @@
 /** The one runner for a landing's `requiredLocalVerification`, used by the CLI, Pi and the host. */
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
 import { runBoundedProcess } from "./bounded-process.mjs";
+import { checkoutCwd } from "./checkout-cwd.mjs";
 import { truncateUtf8 } from "./utf8.mjs";
 import { redactVerificationOutput, summarizeVerificationFailure } from "./verification-failure.mjs";
 import { verificationSlotEnvironment, withVerificationSlot } from "./verification-slot.mjs";
@@ -60,7 +61,9 @@ const formatDuration = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${
  * `RequiredVerificationError` with redacted evidence.
  */
 export async function runRequiredVerification(input) {
-  const { root, checks, onProgress = () => {}, acceptFailure, slot } = input;
+  const { checks, onProgress = () => {}, acceptFailure, slot } = input;
+  // The real root: commands run at real paths, so redaction must match them.
+  const root = await realpath(input.root);
   const base = (input.environment ?? (() => process.env))();
   // Commands see the slot as held, so a nested landing-aware tool does not queue behind it.
   const environment = verificationSlotEnvironment(base);
@@ -70,10 +73,13 @@ export async function runRequiredVerification(input) {
       const check = normalizeVerificationDeclaration(declared, "requiredLocalVerification");
       const args = check.args.map(String);
       const command = [check.executable, ...args].join(" ");
-      const at = (cwd) => typeof cwd === "string" ? join(root, cwd) : root;
+      // Both directories are contained before anything in this check runs.
+      const subject = `Required verification check ${index + 1}`;
+      const checkCwd = await checkoutCwd(root, check.cwd, subject);
       if (check.capability) {
         const { probe } = check.capability;
-        const probeResult = await runBoundedProcess({ executable: probe.executable, args: probe.args, cwd: at(probe.cwd),
+        const probeCwd = await checkoutCwd(root, probe.cwd, `${subject} capability probe ${check.capability.id}`);
+        const probeResult = await runBoundedProcess({ executable: probe.executable, args: probe.args, cwd: probeCwd,
           timeoutMs: 30_000, maxOutputBytes: OUTPUT_BYTES, env: environment });
         const probed = { ...probeResult, code: probeResult.exitCode ?? undefined };
         const availability = classifyCapabilityProbe(check.capability, probed);
@@ -85,7 +91,7 @@ export async function runRequiredVerification(input) {
       }
       onProgress(`[verify ${index + 1}/${checks.length}] ${command}`);
       const started = Date.now();
-      const result = await runBoundedProcess({ executable: check.executable, args, cwd: at(check.cwd),
+      const result = await runBoundedProcess({ executable: check.executable, args, cwd: checkCwd,
         timeoutMs: CHECK_TIMEOUT_MS, maxOutputBytes: OUTPUT_BYTES, env: environment });
       if (result.exitCode !== 0 || result.timedOut || result.cancelled || result.signal || result.error) {
         const accepted = await acceptFailure?.({ ...check, args }, result, environment);
