@@ -1,6 +1,6 @@
 import { integrateLandingCandidate, finishLanding } from "./landing-candidate.mjs";
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
-import { cleanupEligibleAt, LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
+import { LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runRequiredVerification } from "./required-verification.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
@@ -11,11 +11,12 @@ import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
+import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { describePostLandFailure, latestPostLandResult, postLandChecks, startPostLandVerification } from "./post-land-verification.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { normalizeDeclaredVerification } from "./verification-policy.mjs";
+import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -188,17 +189,19 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
   return { current, integration, integrationBranch, configuration };
 }
 
-async function readConfiguration(root) {
+/** The landing configuration from `.peach/execution.json`, read the same way by every runtime. */
+export async function readConfiguration(root) {
   let raw;
   try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [], postLandVerification: [] }; throw error; }
   const parsed = JSON.parse(raw);
+  postIntegrationPolicy(parsed?.postIntegration);
   const remote = declaredPublicationRemote(parsed);
   const checks = parsed?.requiredLocalVerification ?? [];
   if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
-  const requiredLocalVerification = normalizeDeclaredVerification(checks);
-  if (requiredLocalVerification.length !== checks.length) throw new Error("Malformed requiredLocalVerification entry");
-  return { integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification,
+  const requiredLocalVerification = checks.map((entry, index) => normalizeVerificationDeclaration(entry, `requiredLocalVerification[${index}]`));
+  return { parallelExecution: parsed.parallelExecution === true,
+    integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification,
     postLandVerification: postLandChecks(parsed.postLandVerification), remote };
 }
 
@@ -614,16 +617,18 @@ export function statePath(workspaceName) {
 
 async function writeLandingState(context, artifact, verification, phase = "landed", localOnly, operationId) {
   await mkdir(STATE_HOME, { recursive: true, mode: 0o700 });
+  const metadata = await workspaceMetadata(context.current.name);
+  const landedAt = new Date().toISOString();
   await writeWorkspaceJson(statePath(context.current.name), {
     version: 1, phase, operationId, cleanupPending: true, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
     integrationRoot: context.integration.root, integrationBranch: context.integrationBranch,
     artifactCommitId: artifact.commitId, artifactChangeId: artifact.changeId,
     artifactDescription: artifact.description, verification: verification.status,
-    verificationCommands: verification.passed, verificationEvidence: verification, landedAt: new Date().toISOString(),
-    workspaceImplementationChangeId: (await workspaceMetadata(context.current.name))?.implementationChangeId,
-    cleanupEligibleAt: cleanupEligibleAt(new Date().toISOString()),
-    ...(typeof (await workspaceMetadata(context.current.name))?.issueNumber === "number"
-      ? { issueNumber: (await workspaceMetadata(context.current.name)).issueNumber } : {}),
+    verificationCommands: verification.passed, verificationEvidence: verification, landedAt,
+    workspaceImplementationChangeId: metadata?.implementationChangeId,
+    // No archive period: a delivered checkout is eligible for cleanup at landing.
+    cleanupEligibleAt: landedAt,
+    ...(typeof metadata?.issueNumber === "number" ? { issueNumber: metadata.issueNumber } : {}),
   });
 }
 

@@ -14,6 +14,7 @@ export interface WorkspaceContext {
   integration: WorkspaceEntry;
   integrationBranch: string;
   configuration: {
+    parallelExecution?: boolean;
     integrationBranch?: string;
     requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
     /** Commands run in the background after a fresh integration; see post-land-verification. */
@@ -22,6 +23,7 @@ export interface WorkspaceContext {
     remote?: string | null;
   };
 }
+export function readConfiguration(root: string): Promise<WorkspaceContext["configuration"]>;
 export class CommandError extends Error {}
 export function explicitIssueNumber(value?: string | null): number | null;
 export function readWorkspaceMode(): Promise<"isolated" | "direct">;

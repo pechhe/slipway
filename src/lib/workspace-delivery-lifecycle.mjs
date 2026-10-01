@@ -4,11 +4,6 @@ import { join, resolve } from "node:path";
 /** Retirement policy shared by Peach and vanilla Pi. There is no archive period:
  * a delivered checkout is eligible at landing, once callers prove identity,
  * ancestry, publication and exclusive access. */
-export function cleanupEligibleAt(landedAt) {
-  const time = Date.parse(landedAt);
-  return Number.isFinite(time) ? new Date(time).toISOString() : null;
-}
-
 export function cleanupRetentionReason(state, context, metadata) {
   if (!state || state.phase !== "landed") return "not-landed";
   if (state.workspaceName !== context.current.name

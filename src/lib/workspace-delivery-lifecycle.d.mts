@@ -1,5 +1,4 @@
 export const LANDED_WORKSPACE_REFUSAL: string;
-export function cleanupEligibleAt(landedAt: string): string | null;
 export function assertWorkspaceNotRetired(workspaceName: string): Promise<void>;
 export type WorkspaceContinuationDisposition =
   | { kind: "active" }
