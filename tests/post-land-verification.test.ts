@@ -33,7 +33,7 @@ async function fixture() {
   git(["config", "user.email", "fixture@example.com"]);
   await writeFile(path.join(repo, "value.txt"), "initial");
   await writeFile(path.join(repo, ".peach", "execution.json"), JSON.stringify({
-    integrationBranch: "main", requiredLocalVerification: [],
+    version: 1, integrationBranch: "main", requiredLocalVerification: [],
     postLandVerification: [{ executable: process.execPath, args: ["-e", CHECK] }],
   }));
   git(["add", "."]);

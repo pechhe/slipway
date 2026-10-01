@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
   workspaceHasUnintegratedWork,
   workspaceMetadata,
 } from "./peach-workspace.mjs";
+import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { cleanupRetentionReason } from "./workspace-delivery-lifecycle.mjs";
 import { archiveIntegratedWorkspaceEvidence } from "./workspace-finalization.mjs";
@@ -99,28 +100,6 @@ const REPRODUCIBLE = new Set([
 ]);
 
 /**
- * Compile a repository's `generatedPaths` declaration from `.peach/execution.json`:
- * repository-relative paths or globs (`*` within one segment, `**` across segments)
- * of generated output that cleanup may discard. A match also covers everything
- * below it. Anything that could escape or be ambiguous fails closed.
- */
-export function generatedPathMatchers(declared) {
-  if (declared === undefined) return [];
-  if (!Array.isArray(declared)) throw new Error(".peach/execution.json generatedPaths must be an array of repository-relative paths");
-  return declared.map((entry) => {
-    const segments = typeof entry === "string" ? entry.split("/") : [];
-    if (!segments.length || entry.startsWith("/") || entry.includes("\\") || entry.includes("\0")
-      || segments.some((segment) => !segment || segment === "." || segment === ".." || (segment.includes("**") && segment !== "**"))
-      || segments.every((segment) => /^\**$/.test(segment))) {
-      throw new Error(`.peach/execution.json generatedPaths entry ${JSON.stringify(entry)} must be a specific repository-relative path without '.', '..', or empty segments`);
-    }
-    const pattern = segments.map((segment) => segment === "**" ? "(?:[^/]+/)*"
-      : `${segment.split("*").map((part) => part.replace(/[.+?^${}()|[\]]/g, "\\$&")).join("[^/]*")}/`).join("");
-    return new RegExp(`^${pattern}$`); // tested against `path/`
-  });
-}
-
-/**
  * The shared cleanup check for a landed checkout: material neither tracked nor
  * reproducible under the integration checkout's declared `generatedPaths`.
  * Every cleanup surface (Pi launcher, CLI, Peach host) must pass this first.
@@ -136,11 +115,9 @@ export function describeRetention(result) {
     + " (remove them, or declare generated output in .peach/execution.json generatedPaths)";
 }
 
+/** Cleanup judges files on disk, so it reads the primary checkout's working policy (strictly). */
 async function declaredGeneratedPaths(integrationRoot) {
-  let raw;
-  try { raw = await readFile(join(integrationRoot, ".peach", "execution.json"), "utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return []; throw error; }
-  return generatedPathMatchers(JSON.parse(raw)?.generatedPaths);
+  return generatedPathMatchers((await readExecutionPolicy(integrationRoot))?.generatedPaths);
 }
 
 /**

@@ -2,6 +2,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
+import { parseExecutionPolicy } from "./execution-policy.mjs";
 import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 export async function finalizationGit(gitDirectory, args, environment = sanitizedProcessEnv) {
@@ -69,12 +70,8 @@ export async function readExactExecutionPolicy(selectedGitDirectory, commit, env
   if (resolved !== commit) throw new Error("Commit identity changed");
   const listed = (await finalizationGit(gitDirectory, ["ls-tree", "--name-only", commit, "--", ".peach/execution.json"], environment)).trim();
   if (!listed) return { gitDirectory, configuration: null };
-  const configuration = JSON.parse(await finalizationGit(gitDirectory, ["show", `${commit}:.peach/execution.json`], environment));
-  // Only a declared external-state step needs a versioned policy.
-  if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)
-    || (configuration.postIntegration !== undefined && configuration.version !== 1)) {
-    throw new Error("Integrated source has an invalid execution policy");
-  }
+  // The same strict rules as landing, applied to the exact integrated object.
+  const configuration = parseExecutionPolicy(await finalizationGit(gitDirectory, ["show", `${commit}:.peach/execution.json`], environment));
   return { gitDirectory, configuration };
 }
 

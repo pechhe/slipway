@@ -1,0 +1,227 @@
+/**
+ * The one reader of a repository's `.peach/execution.json`: strict parsing, reading
+ * from a checkout or an exact revision, and integration-branch resolution
+ * (declared → origin/HEAD → main → master). Landing reads the policy committed on
+ * the integration bookmark, never the primary checkout's working files.
+ */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { postIntegrationPolicy } from "./post-integration-policy.mjs";
+import { declaredPublicationRemote } from "./source-publication-policy.mjs";
+import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
+import { runWorkspaceCommand } from "./workspace-command.mjs";
+
+export const EXECUTION_POLICY_PATH = ".peach/execution.json";
+const POLICY_BYTES = 64 * 1024;
+const MAX_CHECKS = 20;
+const MAX_ARGS = 100;
+const MAX_ARG_LENGTH = 32_000;
+/** A bookmark name that cannot be read as an option, a revset operator or a range. */
+export const SAFE_BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
+const EXECUTABLE = /^[A-Za-z0-9._+-]+$/;
+/** A landing gate runs a named tool, never a shell or the VCS it is guarding. */
+const FORBIDDEN_GATE_EXECUTABLES = new Set(["bash", "sh", "zsh", "fish", "pwsh", "powershell", "git", "jj"]);
+const FALLBACK_BRANCHES = ["main", "master"];
+
+const fail = (message) => { throw new Error(`${EXECUTION_POLICY_PATH} ${message}`); };
+const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+/** A repository-relative directory that stays inside the checkout (lexically; runners re-check the real path). */
+function containedCwd(value, field) {
+  if (typeof value !== "string" || !value.trim() || value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\0")
+    || value.split(/[\\/]/).includes("..")) fail(`${field} must be a relative path inside the checkout`);
+}
+
+function gateCommand(command, field) {
+  if (!EXECUTABLE.test(command.executable)) fail(`${field}.executable must be a bare executable name`);
+  if (FORBIDDEN_GATE_EXECUTABLES.has(command.executable.toLowerCase())) fail(`${field}.executable is unsafe for a landing gate`);
+  if (command.args.length > MAX_ARGS) fail(`${field}.args must contain at most ${MAX_ARGS} entries`);
+  if (command.args.some((arg) => arg.length > MAX_ARG_LENGTH)) fail(`${field}.args entries must be at most ${MAX_ARG_LENGTH} characters`);
+  if (command.cwd !== undefined) containedCwd(command.cwd, `${field}.cwd`);
+}
+
+/** Declared post-land commands: `[{ executable, args, cwd? }]`. */
+function postLandChecks(value) {
+  if (!Array.isArray(value)) fail("postLandVerification must be a list of commands");
+  return value.map((check) => {
+    if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)
+      || (check.cwd !== undefined && typeof check.cwd !== "string")) fail("postLandVerification has a malformed entry");
+    return { executable: check.executable, args: check.args.map(String), ...(check.cwd ? { cwd: check.cwd } : {}) };
+  });
+}
+
+/** Landing's declared checks, in exactly the shape the verification digest has always covered. */
+function requiredLocalVerification(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > MAX_CHECKS) fail(`requiredLocalVerification must be a list of at most ${MAX_CHECKS} commands`);
+  return value.map((entry, index) => {
+    const field = `requiredLocalVerification[${index}]`;
+    const check = normalizeVerificationDeclaration(entry, field);
+    gateCommand(check, field);
+    if (check.capability) gateCommand(check.capability.probe, `${field}.capability.probe`);
+    return check;
+  });
+}
+
+const migrationPath = (value) => {
+  if (typeof value !== "string" || !value || value.includes("\\") || value.startsWith("/")
+    || value.split("/").some((part) => !part || part === "." || part === ".."))
+    fail("migrationFinalization declares an unsafe path");
+  return value;
+};
+const migrationPaths = (value, field) => {
+  if (!Array.isArray(value) || !value.length || value.length > 50) fail(`migrationFinalization.${field} must list 1-50 paths`);
+  return [...new Set(value.map(migrationPath))];
+};
+const migrationCommand = (value, field) => {
+  if (!isObject(value) || typeof value.executable !== "string" || !EXECUTABLE.test(value.executable)
+    || !Array.isArray(value.args) || value.args.some((arg) => typeof arg !== "string" || arg.length > MAX_ARG_LENGTH))
+    fail(`migrationFinalization.${field} is not a safe command`);
+  return { executable: value.executable, args: [...value.args], cwd: value.cwd == null ? null : migrationPath(value.cwd) };
+};
+
+function migrationFinalization(value) {
+  if (value == null) return null;
+  if (!isObject(value) || value.mode !== "late_bound_serialized") fail("migrationFinalization.mode must be late_bound_serialized");
+  return { mode: value.mode, triggerPaths: migrationPaths(value.triggerPaths, "triggerPaths"),
+    artifactPaths: migrationPaths(value.artifactPaths, "artifactPaths"),
+    generate: migrationCommand(value.generate, "generate"), verify: migrationCommand(value.verify, "verify") };
+}
+
+/**
+ * Compile a repository's `generatedPaths` declaration: repository-relative paths or
+ * globs (`*` within one segment, `**` across segments) of generated output that
+ * cleanup may discard. A match also covers everything below it. Anything that could
+ * escape or be ambiguous fails closed.
+ */
+export function generatedPathMatchers(declared) {
+  if (declared === undefined) return [];
+  if (!Array.isArray(declared)) fail("generatedPaths must be an array of repository-relative paths");
+  return declared.map((entry) => {
+    const segments = typeof entry === "string" ? entry.split("/") : [];
+    if (!segments.length || entry.startsWith("/") || entry.includes("\\") || entry.includes("\0")
+      || segments.some((segment) => !segment || segment === "." || segment === ".." || (segment.includes("**") && segment !== "**"))
+      || segments.every((segment) => /^\**$/.test(segment))) {
+      fail(`generatedPaths entry ${JSON.stringify(entry)} must be a specific repository-relative path without '.', '..', or empty segments`);
+    }
+    const pattern = segments.map((segment) => segment === "**" ? "(?:[^/]+/)*"
+      : `${segment.split("*").map((part) => part.replace(/[.+?^${}()|[\]]/g, "\\$&")).join("[^/]*")}/`).join("");
+    return new RegExp(`^${pattern}$`); // tested against `path/`
+  });
+}
+
+/**
+ * Parse a policy file's text strictly. Landing's sections are normalized; every
+ * other declaration (`postIntegration`, `generatedPaths`, `sourcePublication`,
+ * `requiredChecks`, …) is kept as declared, after validation where Peach owns it.
+ */
+export function parseExecutionPolicy(raw) {
+  if (typeof raw !== "string") fail("must be text");
+  if (Buffer.byteLength(raw, "utf8") > POLICY_BYTES) fail("exceeds the 64 KiB policy budget");
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { fail("is not valid JSON"); }
+  if (!isObject(parsed) || parsed.version !== 1) fail("must be a version-1 policy");
+  if (parsed.integrationBranch != null && (typeof parsed.integrationBranch !== "string" || !SAFE_BRANCH.test(parsed.integrationBranch)))
+    fail("declares an unsafe integrationBranch");
+  postIntegrationPolicy(parsed.postIntegration);
+  generatedPathMatchers(parsed.generatedPaths);
+  return {
+    ...parsed,
+    version: 1,
+    integrationBranch: parsed.integrationBranch ?? undefined,
+    remote: declaredPublicationRemote(parsed),
+    parallelExecution: parsed.parallelExecution === true,
+    requiredLocalVerification: requiredLocalVerification(parsed.requiredLocalVerification),
+    postLandVerification: postLandChecks(parsed.postLandVerification ?? []),
+    migrationFinalization: migrationFinalization(parsed.migrationFinalization),
+  };
+}
+
+/** The landing configuration of a repository that declares no policy. */
+export const UNDECLARED_POLICY = Object.freeze({ requiredLocalVerification: [], postLandVerification: [], remote: null, parallelExecution: false, migrationFinalization: null });
+
+/** The policy in a checkout's working files, or null when it declares none. */
+export async function readExecutionPolicy(root) {
+  let raw;
+  try { raw = await readFile(join(root, EXECUTION_POLICY_PATH), "utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  return parseExecutionPolicy(raw);
+}
+
+const jjRead = (repo, args) => runWorkspaceCommand("jj", ["--color=never", "--ignore-working-copy", ...args], { cwd: repo });
+const symbol = (name) => JSON.stringify(name);
+
+async function commitOf(repo, revision) {
+  const result = await jjRead(repo, ["log", "--no-graph", "-r", symbol(revision), "-T", "commit_id"]);
+  const commitId = result.stdout.trim();
+  return result.code === 0 && /^[a-f0-9]{40,64}$/.test(commitId) ? commitId : null;
+}
+
+/**
+ * The policy committed at a bookmark or commit id of a JJ repository (`repo` is any
+ * of its checkouts), never that checkout's working files.
+ */
+export async function readExecutionPolicyAtCommit(repo, revision) {
+  const commitId = await commitOf(repo, revision);
+  if (!commitId) throw new Error(`Revision '${revision}' does not exist`);
+  const shown = await jjRead(repo, ["file", "show", "-r", commitId, `root-file:${symbol(EXECUTION_POLICY_PATH)}`]);
+  if (shown.code !== 0) {
+    if (/No such path/i.test(shown.stderr)) return { commitId, policy: null };
+    throw new Error(`Could not read ${EXECUTION_POLICY_PATH} at ${commitId}: ${shown.stderr.trim()}`);
+  }
+  return { commitId, policy: parseExecutionPolicy(shown.stdout) };
+}
+
+/**
+ * D4: the declared branch, else the remote's default (`origin/HEAD`), else `main`,
+ * else `master`. Probes are injected so Git-only setup and JJ checkouts share the
+ * order. Null when nothing resolves.
+ */
+export async function resolveIntegrationBranch({ declared, originHead = async () => null, exists }) {
+  if (declared != null) {
+    if (typeof declared !== "string" || !SAFE_BRANCH.test(declared)) fail("declares an unsafe integrationBranch");
+    return declared;
+  }
+  const head = await originHead();
+  if (typeof head === "string" && SAFE_BRANCH.test(head) && await exists(head)) return head;
+  for (const candidate of FALLBACK_BRANCHES) if (await exists(candidate)) return candidate;
+  return null;
+}
+
+/** origin/HEAD and local-bookmark probes for a JJ repository. */
+export function jjIntegrationProbes(repo) {
+  return {
+    originHead: async () => {
+      const root = await jjRead(repo, ["git", "root"]);
+      if (root.code !== 0) return null;
+      const head = await runWorkspaceCommand("git", ["--git-dir", root.stdout.trim(), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd: repo });
+      return head.code === 0 ? head.stdout.trim().replace(/^origin\//, "") || null : null;
+    },
+    exists: async (name) => await commitOf(repo, name) !== null,
+  };
+}
+
+/**
+ * The integration bookmark and the policy committed on it (D3). The checkout's
+ * working policy (`hintRoot`) only suggests which bookmark to read first; the
+ * committed policy decides, and a bookmark whose policy names another one is
+ * followed once and must then name itself.
+ */
+export async function readIntegrationPolicy(repo, { hintRoot } = {}) {
+  const probes = jjIntegrationProbes(repo);
+  let fallback;
+  const undeclared = async () => (fallback ??= { branch: await resolveIntegrationBranch(probes) }).branch;
+  const hint = hintRoot ? (await readExecutionPolicy(hintRoot).catch(() => null))?.integrationBranch : undefined;
+  const start = hint && await probes.exists(hint) ? hint : await undeclared();
+  if (!start) throw new Error("Could not resolve an integration bookmark (tried the declared branch, origin/HEAD, main and master)");
+  const first = await readExecutionPolicyAtCommit(repo, start);
+  const target = first.policy?.integrationBranch ?? await undeclared();
+  if (target === start) return { integrationBranch: start, ...first };
+  if (!target || !await probes.exists(target)) throw new Error(`Configured integration bookmark '${target}' does not exist locally`);
+  const second = await readExecutionPolicyAtCommit(repo, target);
+  const confirmed = second.policy?.integrationBranch ?? await undeclared();
+  if (confirmed !== target) {
+    throw new Error(`Integration policy drift: '${start}' declares '${target}', whose committed policy resolves to '${confirmed}'`);
+  }
+  return { integrationBranch: target, ...second };
+}

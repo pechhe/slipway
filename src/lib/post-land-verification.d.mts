@@ -15,7 +15,6 @@ export type PostLandRecord = {
   reason?: string;
 };
 export function postLandRoot(): string;
-export function postLandChecks(value?: unknown): PostLandCheck[];
 export function startPostLandVerification(input: {
   integrationRoot: string; gitDirectory: string; base: string; commit: string; checks: PostLandCheck[];
   runner?: string[];

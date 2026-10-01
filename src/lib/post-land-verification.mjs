@@ -20,16 +20,6 @@ const FAILURE_TAIL_LINES = 60;
 export const postLandRoot = () => path.join(homedir(), ".pi", "agent", "workspace-state", "post-land");
 const recordFile = (commit) => path.join(postLandRoot(), `${commit}.json`);
 
-/** Declared post-land commands: `[{ executable, args, cwd? }]`. */
-export function postLandChecks(value = []) {
-  if (!Array.isArray(value)) throw new Error("Malformed postLandVerification policy");
-  return value.map((check) => {
-    if (!check || typeof check.executable !== "string" || !Array.isArray(check.args)
-      || (check.cwd !== undefined && typeof check.cwd !== "string")) throw new Error("Malformed postLandVerification entry");
-    return { executable: check.executable, args: check.args.map(String), ...(check.cwd ? { cwd: check.cwd } : {}) };
-  });
-}
-
 /**
  * Queue a run for `base..commit`; returns its record. A long-lived host (the
  * Peach runtime, a Pi session) runs it in-process. A process that exits after

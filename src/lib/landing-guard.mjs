@@ -5,6 +5,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { parseExecutionPolicy } from "./execution-policy.mjs";
 
 const LAND = "Use `peach-workspace land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
 
@@ -14,7 +15,10 @@ export async function governedBranches(cwd) {
     const raw = await readFile(join(dir, ".peach", "execution.json"), "utf8").catch(() => null);
     if (raw !== null) {
       let declared;
-      try { declared = JSON.parse(raw)?.integrationBranch; } catch { /* an unreadable policy still governs */ }
+      try { declared = parseExecutionPolicy(raw).integrationBranch; } catch {
+        // An invalid policy still governs: keep guarding whatever branch it names.
+        try { declared = JSON.parse(raw)?.integrationBranch; } catch { /* unreadable */ }
+      }
       return typeof declared === "string" && declared ? [declared] : ["main", "master"];
     }
     if (dirname(dir) === dir) return null;

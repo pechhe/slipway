@@ -13,7 +13,10 @@ if (homedir() === userInfo().homedir) {
 export const jj = (cwd: string, args: string[]) => execFileSync("jj", ["--color=never", ...args], { cwd, encoding: "utf8" }).trim();
 
 // A disposable project with a bare `origin`, landing policy and a verification
-// check that records which checkout it verified.
+// check (Node source; a landing gate never runs a shell) that records which checkout it verified.
+/** Node source appending the verified checkout's path to `verified`. */
+export const recordCheckout = (verified: string) => `require("node:fs").appendFileSync(${JSON.stringify(verified)}, process.cwd() + "\\n")`;
+
 export async function project(options: { ignore?: string; generatedPaths?: unknown; verify?: (verified: string) => string } = {}) {
   process.env.JJ_USER ??= "Fixture";
   process.env.JJ_EMAIL ??= "fixture@example.com";
@@ -32,7 +35,7 @@ export async function project(options: { ignore?: string; generatedPaths?: unkno
   await writeFile(join(repo, ".peach", "execution.json"), JSON.stringify({
     version: 1, integrationBranch: "main",
     sourcePublication: { version: 1, mode: "required", remote: "origin" },
-    requiredLocalVerification: [{ executable: "sh", args: ["-c", options.verify?.(verified) ?? `pwd >> ${JSON.stringify(verified)}`] }],
+    requiredLocalVerification: [{ executable: "node", args: ["-e", options.verify?.(verified) ?? recordCheckout(verified)] }],
     ...(options.generatedPaths === undefined ? {} : { generatedPaths: options.generatedPaths }),
   }));
   git(["add", "."]);

@@ -1,5 +1,5 @@
 import { integrateLandingCandidate, finishLanding } from "./landing-candidate.mjs";
-import { declaredPublicationRemote } from "./source-publication-policy.mjs";
+import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
 import { LANDED_WORKSPACE_REFUSAL, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runRequiredVerification } from "./required-verification.mjs";
@@ -11,12 +11,10 @@ import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
-import { postIntegrationPolicy } from "./post-integration-policy.mjs";
-import { describePostLandFailure, latestPostLandResult, postLandChecks, startPostLandVerification } from "./post-land-verification.mjs";
+import { describePostLandFailure, latestPostLandResult, startPostLandVerification } from "./post-land-verification.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
 
 const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
@@ -168,31 +166,10 @@ export async function workspaceContext(cwd = process.cwd(), integratedBranch) {
   if (!current) return null;
   const integration = workspaces.find((entry) => entry.name === "default");
   if (!integration?.root) throw new Error("The canonical jj workspace named 'default' is missing or unavailable");
-  const configuration = integratedBranch ? { integrationBranch: integratedBranch, requiredLocalVerification: [] } : await readConfiguration(integration.root);
-  // An inferred bookmark was just proven to exist.
-  const integrationBranch = configuration.integrationBranch ?? (await inferIntegrationBranch(cwd));
-  if (configuration.integrationBranch && !(await revisionExists(cwd, integrationBranch))) {
-    throw new Error(
-      `Configured integration bookmark '${integrationBranch}' does not exist locally`,
-    );
-  }
-  return { current, integration, integrationBranch, configuration };
-}
-
-/** The landing configuration from `.peach/execution.json`, read the same way by every runtime. */
-export async function readConfiguration(root) {
-  let raw;
-  try { raw = await readFile(join(root, ".peach", "execution.json"), "utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return { requiredLocalVerification: [], postLandVerification: [] }; throw error; }
-  const parsed = JSON.parse(raw);
-  postIntegrationPolicy(parsed?.postIntegration);
-  const remote = declaredPublicationRemote(parsed);
-  const checks = parsed?.requiredLocalVerification ?? [];
-  if (!parsed || typeof parsed !== "object" || !Array.isArray(checks)) throw new Error("Malformed required local verification policy");
-  const requiredLocalVerification = checks.map((entry, index) => normalizeVerificationDeclaration(entry, `requiredLocalVerification[${index}]`));
-  return { parallelExecution: parsed.parallelExecution === true,
-    integrationBranch: typeof parsed.integrationBranch === "string" ? parsed.integrationBranch : undefined, requiredLocalVerification,
-    postLandVerification: postLandChecks(parsed.postLandVerification), remote };
+  if (integratedBranch) return { current, integration, integrationBranch: integratedBranch, configuration: { ...UNDECLARED_POLICY, integrationBranch: integratedBranch } };
+  // D3: the policy committed on the integration bookmark, not the primary checkout's working files.
+  const { integrationBranch, policy } = await readIntegrationPolicy(cwd, { hintRoot: integration.root });
+  return { current, integration, integrationBranch, configuration: policy ?? UNDECLARED_POLICY };
 }
 
 export async function revisionExists(cwd, revision) {
@@ -202,13 +179,6 @@ export async function revisionExists(cwd, revision) {
     { cwd },
   );
   return result.code === 0 && result.stdout.includes("ok");
-}
-
-export async function inferIntegrationBranch(cwd) {
-  for (const candidate of ["main", "master"]) {
-    if (await revisionExists(cwd, candidate)) return candidate;
-  }
-  throw new Error("Could not resolve an integration bookmark (tried main/master)");
 }
 
 /** A lowercase, hyphenated workspace-name segment. */
@@ -673,6 +643,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
 
 async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
+  // The candidate's own context then reads the fetched bookmark's committed policy (D3).
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
   const integrate = async () => {
     const prior = await readLandingState(context.current.name);

@@ -6,13 +6,11 @@ import {
   assertIssueAvailable,
   assertWorkspaceMutationAllowed,
   attachWorkspaceIssue,
-  inferIntegrationBranch,
   landingStatePaths,
   listWorkspaces,
   metadataPath,
   parseWorkspaceList,
   prepareWorkspaceDependencies,
-  readConfiguration,
   readLandingState,
   revisionExists,
   revisionFacts,
@@ -22,6 +20,7 @@ import {
   workspaceMetadata,
   workspaceSlug,
 } from "./peach-workspace.mjs";
+import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
 import { claimSpare, forgetWorkspace } from "./workspace-lifecycle.mjs";
 import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 
@@ -144,9 +143,9 @@ async function contextFromDefaultRecord(cwd) {
   const integration = listed.code === 0 ? parseWorkspaceList(listed.stdout).find((entry) => entry.name === "default" && entry.root) : null;
   if (!integration) return null;
   const root = await realpath(integration.root);
-  const configuration = await readConfiguration(root);
+  const { integrationBranch, policy } = await readIntegrationPolicy(root, { hintRoot: root });
   const entry = { ...integration, root };
-  return { current: entry, integration: entry, integrationBranch: configuration.integrationBranch ?? await inferIntegrationBranch(root), configuration };
+  return { current: entry, integration: entry, integrationBranch, configuration: policy ?? UNDECLARED_POLICY };
 }
 
 /** The surviving working-copy commit whose JJ history proves it is `workspaceName`. */

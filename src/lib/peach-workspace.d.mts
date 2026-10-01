@@ -14,17 +14,9 @@ export interface WorkspaceContext {
   current: WorkspaceEntry;
   integration: WorkspaceEntry;
   integrationBranch: string;
-  configuration: {
-    parallelExecution?: boolean;
-    integrationBranch?: string;
-    requiredLocalVerification: import("./verification-policy.mjs").VerificationDeclaration[];
-    /** Commands run in the background after a fresh integration; see post-land-verification. */
-    postLandVerification?: import("./post-land-verification.mjs").PostLandCheck[];
-    /** Remote the integration branch is pushed to after landing; null when undeclared. */
-    remote?: string | null;
-  };
+  /** The policy committed on the integration bookmark (D3), or the undeclared defaults. */
+  configuration: Partial<import("./execution-policy.mjs").ExecutionPolicy> & typeof import("./execution-policy.mjs").UNDECLARED_POLICY;
 }
-export function readConfiguration(root: string): Promise<WorkspaceContext["configuration"]>;
 export class CommandError extends Error {}
 export function explicitIssueNumber(value?: string | null): number | null;
 export function readWorkspaceMode(): Promise<"isolated" | "direct">;
@@ -36,8 +28,6 @@ export function inspectWorkspace(cwd?: string): Promise<WorkspaceEntry | null>;
 export function listWorkspaces(cwd?: string, options?: { readOnly?: boolean }): Promise<WorkspaceEntry[]>;
 export type RevisionFacts = { changeId: string; commitId: string; empty: boolean; conflict: boolean; description: string };
 export function revisionFacts(cwd: string, revision: string): Promise<RevisionFacts>;
-/** The integration bookmark when undeclared: `main`, then `master`. */
-export function inferIntegrationBranch(cwd: string): Promise<string>;
 export function findWorkspace(cwd: string, name: string): Promise<WorkspaceEntry>;
 export function attachWorkspaceIssue(
   cwd: string,

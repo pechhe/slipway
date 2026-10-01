@@ -1,4 +1,4 @@
-import { jj, project } from "./support/workspace-project.ts";
+import { jj, project, recordCheckout } from "./support/workspace-project.ts";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -111,7 +111,9 @@ test("cleanup retries pending housekeeping before releasing a landed workspace",
 }, 120_000);
 
 test("a landing and a cleanup of the same workspace serialize on one key", async () => {
-  const f = await project({ verify: (verified) => `touch "$PEACH_TEST_GATE.started"; while [ ! -f "$PEACH_TEST_GATE" ]; do sleep 0.05; done; pwd >> ${JSON.stringify(verified)}` });
+  const f = await project({ verify: (verified) => `const fs = require("node:fs"); const gate = process.env.PEACH_TEST_GATE;
+    fs.writeFileSync(gate + ".started", "");
+    const timer = setInterval(() => { if (fs.existsSync(gate)) { clearInterval(timer); ${recordCheckout(verified)}; } }, 50);` });
   const gate = join(f.root, "gate");
   process.env.PEACH_TEST_GATE = gate;
   try {

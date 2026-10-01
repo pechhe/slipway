@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { generatedPathMatchers } from "../src/lib/workspace-lifecycle.mjs";
+import { generatedPathMatchers } from "../src/lib/execution-policy.mjs";
 
 const covers = (declared: string[], path: string) => generatedPathMatchers(declared).some((matcher) => matcher.test(`${path}/`));
 

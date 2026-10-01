@@ -11,6 +11,7 @@ function fixture(direct = false) {
   const context = {
     current: { name: direct ? "default" : "task", root: "/task" },
     integration: { name: "default", root: "/repo" }, integrationBranch: "develop",
+    configuration: { requiredLocalVerification: [], migrationFinalization: null },
   };
   const candidate = { changeId: "change", commitId: "semantic", empty: false, conflict: false, description: "Task" };
   let liveCandidate = candidate;

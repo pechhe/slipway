@@ -1,0 +1,186 @@
+import { jj, project } from "./support/workspace-project.ts";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "vite-plus/test";
+import {
+  parseExecutionPolicy, readExecutionPolicyAtCommit, readIntegrationPolicy, resolveIntegrationBranch,
+} from "../src/lib/execution-policy.mjs";
+import { landWorkspace, workspaceContext } from "../src/lib/peach-workspace.mjs";
+
+const peachPolicy = readFileSync(fileURLToPath(new URL("../../../.peach/execution.json", import.meta.url)), "utf8");
+// The shape of YardSmith's policy: a develop integration branch, the older
+// sourcePublication remote, `cwd: null`, migrations and a development database step.
+const yardsmithPolicy = {
+  version: 1,
+  integrationBranch: "develop",
+  sourcePublication: { version: 1, mode: "required", remote: "origin" },
+  releaseBranch: "master",
+  generatedPaths: ["apps/planner-workbench/src/paraglide", ".yardsmith/diagnostics"],
+  requiredLocalVerification: [{ executable: "bun", args: ["run", "test:business-journeys:critical"], cwd: null }],
+  unattendedMergeToIntegration: true,
+  parallelExecution: true,
+  migrationFinalization: {
+    mode: "late_bound_serialized",
+    triggerPaths: ["apps/planner-workbench/src/lib/server/db/schema.ts"],
+    artifactPaths: ["apps/planner-workbench/drizzle"],
+    generate: { executable: "bun", args: ["run", "db:generate"], cwd: "apps/planner-workbench" },
+    verify: { executable: "bun", args: ["run", "check:migrations"] },
+  },
+  postIntegration: {
+    version: 1, target: "yardsmith-development-db:61a7", idempotency: "artifact-key",
+    approvalMode: "automatic-development", timeoutMs: 600000,
+    command: { executable: "bun", args: ["scripts/finalize-development-migration.ts"], cwd: "apps/planner-workbench" },
+    targetProbe: { executable: "bun", args: ["scripts/probe-development-database-target.ts"], cwd: "apps/planner-workbench" },
+    environmentKeys: [],
+  },
+};
+const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const policy = (overrides: Record<string, unknown>) => JSON.stringify({ version: 1, ...overrides });
+const check = (executable: string, extra: Record<string, unknown> = {}) => ({ executable, args: ["run", "test"], ...extra });
+
+test("Peach's own policy parses with its landing shape and verification digest unchanged", () => {
+  const parsed = parseExecutionPolicy(peachPolicy);
+  assert.equal(parsed.integrationBranch, "master");
+  assert.equal(parsed.remote, "origin");
+  assert.equal(parsed.parallelExecution, true);
+  assert.equal(parsed.unattendedMergeToIntegration, true);
+  assert.deepEqual(parsed.postLandVerification, [{ executable: "bun", args: ["run", "test:post-land"] }]);
+  assert.deepEqual(parsed.requiredLocalVerification[1], { executable: "bun", args: ["dedupe", "--check"], concurrent: true });
+  // The digest landing records for this declaration before the shared parser existed.
+  assert.equal(digest(parsed.requiredLocalVerification), "25effc2d61517a47e37578dae699fe59599f9b43732013020df26aab978316b8");
+});
+
+test("a YardSmith-shaped policy keeps every declaration it makes", () => {
+  const parsed = parseExecutionPolicy(JSON.stringify(yardsmithPolicy));
+  assert.equal(parsed.integrationBranch, "develop");
+  assert.equal(parsed.remote, "origin");
+  assert.equal(parsed.releaseBranch, "master");
+  assert.deepEqual(parsed.sourcePublication, yardsmithPolicy.sourcePublication);
+  assert.deepEqual(parsed.generatedPaths, yardsmithPolicy.generatedPaths);
+  assert.deepEqual(parsed.postIntegration, yardsmithPolicy.postIntegration);
+  assert.deepEqual(parsed.requiredLocalVerification, [{ executable: "bun", args: ["run", "test:business-journeys:critical"] }]);
+  assert.equal(digest(parsed.requiredLocalVerification), "41f1dc81f59107adca78bf8466b3bea732d36595686ec012bb10e081494b4e66");
+  assert.deepEqual(parsed.migrationFinalization?.generate, { executable: "bun", args: ["run", "db:generate"], cwd: "apps/planner-workbench" });
+  assert.equal(parsed.migrationFinalization?.verify.cwd, null);
+});
+
+test("an empty or absent check list is a valid landing policy", () => {
+  assert.deepEqual(parseExecutionPolicy(policy({ requiredLocalVerification: [] })).requiredLocalVerification, []);
+  assert.deepEqual(parseExecutionPolicy(policy({})).requiredLocalVerification, []);
+  assert.equal(parseExecutionPolicy(policy({})).remote, null);
+});
+
+test("the strict rules reject unsafe or malformed policies", () => {
+  const rejects = (raw: string, pattern: RegExp) => assert.throws(() => parseExecutionPolicy(raw), pattern, raw.slice(0, 120));
+  rejects(JSON.stringify({ integrationBranch: "main" }), /version-1 policy/);
+  rejects("{", /not valid JSON/);
+  rejects(policy({ padding: "x".repeat(64 * 1024) }), /64 KiB/);
+  for (const shell of ["bash", "sh", "zsh", "fish", "pwsh", "git", "jj", "Bash"]) {
+    rejects(policy({ requiredLocalVerification: [check(shell)] }), /unsafe for a landing gate/);
+  }
+  rejects(policy({ requiredLocalVerification: [check("/usr/bin/node")] }), /bare executable name/);
+  rejects(policy({ requiredLocalVerification: [check("bun", { cwd: "../x" })] }), /inside the checkout/);
+  rejects(policy({ requiredLocalVerification: [check("bun", { cwd: "/tmp" })] }), /inside the checkout/);
+  rejects(policy({ requiredLocalVerification: [{ executable: "bun", args: Array(101).fill("x") }] }), /at most 100/);
+  rejects(policy({ requiredLocalVerification: Array(21).fill(check("bun")) }), /at most 20/);
+  for (const branch of ["-main", "main..master", "feature branch", "", "x".repeat(201)]) {
+    rejects(policy({ integrationBranch: branch }), /unsafe integrationBranch/);
+  }
+  rejects(policy({ generatedPaths: ["../outside"] }), /generatedPaths entry/);
+  rejects(policy({ remote: "origin upstream" }), /publication remote/);
+  rejects(policy({ postIntegration: { ...yardsmithPolicy.postIntegration, timeoutMs: 600001 } }), /deadline/);
+  rejects(policy({ migrationFinalization: { ...yardsmithPolicy.migrationFinalization, generate: check("../bun") } }), /safe command/);
+});
+
+test("integration branches resolve declared, then origin/HEAD, then main, then master", async () => {
+  const exists = (names: string[]) => async (name: string) => names.includes(name);
+  assert.equal(await resolveIntegrationBranch({ declared: "develop", originHead: async () => "master", exists: exists([]) }), "develop");
+  assert.equal(await resolveIntegrationBranch({ originHead: async () => "master", exists: exists(["main", "master"]) }), "master");
+  assert.equal(await resolveIntegrationBranch({ originHead: async () => null, exists: exists(["main", "master"]) }), "main");
+  assert.equal(await resolveIntegrationBranch({ exists: exists(["master"]) }), "master");
+  assert.equal(await resolveIntegrationBranch({ exists: exists([]) }), null);
+  await assert.rejects(resolveIntegrationBranch({ declared: "a..b", exists: exists([]) }), /unsafe integrationBranch/);
+});
+
+async function gitRepository(branches: Record<string, string | null>, originHead: string) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "peach-policy-")));
+  const repo = join(root, "repo");
+  const remote = join(root, "remote.git");
+  const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, stdio: "pipe" });
+  git(["init", "-q", "--bare", "-b", originHead, remote], root);
+  await mkdir(repo);
+  git(["init", "-q", "-b", Object.keys(branches)[0]!]);
+  git(["config", "user.name", "Fixture"]);
+  git(["config", "user.email", "fixture@example.com"]);
+  git(["remote", "add", "origin", remote]);
+  for (const [branch, declared] of Object.entries(branches)) {
+    git(["checkout", "-q", "-B", branch]);
+    await mkdir(join(repo, ".peach"), { recursive: true });
+    await writeFile(join(repo, ".peach", "execution.json"), policy(declared ? { integrationBranch: declared } : {}));
+    await writeFile(join(repo, `${branch}.txt`), branch);
+    git(["add", "."]);
+    git(["commit", "-qm", branch]);
+    git(["push", "-q", "origin", branch]);
+  }
+  git(["fetch", "-q", "origin"]);
+  git(["remote", "set-head", "origin", originHead]);
+  jj(repo, ["git", "init", "--colocate"]);
+  return { root, repo, dispose: () => rm(root, { recursive: true, force: true }) };
+}
+
+test("a checkout with main and master follows origin/HEAD=master and reads that bookmark's committed policy", async () => {
+  const f = await gitRepository({ main: null, master: null }, "master");
+  try {
+    const resolved = await readIntegrationPolicy(f.repo);
+    assert.equal(resolved.integrationBranch, "master");
+    assert.equal(resolved.commitId, jj(f.repo, ["log", "--no-graph", "-r", "master", "-T", "commit_id"]));
+    // An uncommitted working-file edit is not the committed policy.
+    await writeFile(join(f.repo, ".peach", "execution.json"), "not json");
+    assert.equal((await readExecutionPolicyAtCommit(f.repo, "master")).policy?.integrationBranch, undefined);
+  } finally {
+    await f.dispose();
+  }
+}, 60_000);
+
+test("a release bookmark that names another integration branch is followed to it, and drift fails closed", async () => {
+  const f = await gitRepository({ develop: "develop", master: "develop" }, "master");
+  try {
+    assert.equal((await readIntegrationPolicy(f.repo)).integrationBranch, "develop");
+    const g = await gitRepository({ develop: "master", master: "develop" }, "master");
+    try {
+      await assert.rejects(readIntegrationPolicy(g.repo), /Integration policy drift/);
+    } finally {
+      await g.dispose();
+    }
+  } finally {
+    await f.dispose();
+  }
+}, 60_000);
+
+test("landing verifies with the integration bookmark's policy and ignores an uncommitted edit in the primary checkout", async () => {
+  const f = await project();
+  try {
+    // A Direct landing of the primary checkout, whose candidate edits the policy.
+    const primaryPolicy = join(f.repo, ".peach", "execution.json");
+    const committed = JSON.parse(await readFile(primaryPolicy, "utf8"));
+    await writeFile(primaryPolicy, JSON.stringify({ ...committed,
+      requiredLocalVerification: [{ executable: "node", args: ["-e", "process.exit(9)"] }] }));
+    await writeFile(join(f.repo, "task.txt"), "task\n");
+    jj(f.repo, ["describe", "-m", "Task"]);
+    const context = await workspaceContext(f.repo);
+    assert.deepEqual(context?.configuration.requiredLocalVerification, committed.requiredLocalVerification);
+    const landed = await landWorkspace(f.repo, { allowDefaultWorkspace: true, onProgress: () => {} });
+    assert.equal(landed.ok, true);
+    // The committed check ran, not the edited one; the edit itself is now integrated.
+    assert.deepEqual((await readFile(f.verified, "utf8")).trim().split("\n"), [f.repo]);
+    assert.match(f.remoteFile(".peach/execution.json"), /process\.exit\(9\)/);
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
