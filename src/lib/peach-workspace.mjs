@@ -23,6 +23,7 @@ const STATE_HOME = join(homedir(), ".pi", "agent", "workspace-state");
 const MODE_PATH = join(homedir(), ".pi", "agent", "workspace-mode.json");
 const LOCK_HOME = join(STATE_HOME, "locks");
 const METADATA_HOME = join(STATE_HOME, "workspaces");
+const LANDED_HOME = join(STATE_HOME, "landed");
 
 export class CommandError extends Error {
   constructor(message, result) {
@@ -379,8 +380,9 @@ async function moveSidecarFile(directory, oldName, newName, transform) {
   }
 }
 
-/** Rename the current isolated workspace and keep lock/metadata/landing
- *  sidecars consistent. Names are slugged; collisions get numeric suffixes. */
+/** Rename the current isolated workspace and keep its lock, metadata and both
+ *  landing-state sidecars consistent, recording the rename history. Names are
+ *  slugged; collisions get numeric suffixes. */
 export async function renameWorkspace(cwd, desired) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default")
@@ -394,9 +396,25 @@ export async function renameWorkspace(cwd, desired) {
 
   await jj(context.current.root, ["workspace", "rename", name]);
   const oldName = context.current.name;
+  const operationId = await jj(context.current.root, ["op", "log", "-n", "1", "--no-graph", "-T", "self.id()"]);
+  const target = await revisionFacts(context.current.root, "@");
+  const renamed = (data) => ({
+    ...data,
+    workspaceName: name,
+    previousWorkspaceNames: [...new Set([
+      ...(Array.isArray(data.previousWorkspaceNames) ? data.previousWorkspaceNames.filter((value) => typeof value === "string" && value.trim()) : []),
+      oldName,
+    ])].slice(-16),
+  });
   await moveSidecarFile(LOCK_HOME, oldName, name, (data) => ({ ...data, workspaceName: name }));
-  await moveSidecarFile(METADATA_HOME, oldName, name, (data) => ({ ...data, workspaceName: name }));
-  await moveSidecarFile(STATE_HOME, oldName, name, (data) => ({ ...data, workspaceName: name }));
+  await moveSidecarFile(METADATA_HOME, oldName, name, (data) => ({
+    ...renamed(data),
+    workspaceRenameEpochs: [
+      ...(Array.isArray(data.workspaceRenameEpochs) ? data.workspaceRenameEpochs.filter((value) => value && typeof value === "object") : []),
+      { version: 1, operationId, fromName: oldName, toName: name, workspacePath: context.current.root, changeId: target.changeId, commitId: target.commitId },
+    ].slice(-16),
+  }));
+  for (const directory of [STATE_HOME, LANDED_HOME]) await moveSidecarFile(directory, oldName, name, renamed);
   return { oldName, name };
 }
 

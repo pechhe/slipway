@@ -1,5 +1,6 @@
 export interface WorkspaceMetadata {
   issueNumber?: number;
+  [key: string]: unknown;
 }
 export interface WorkspaceEntry {
   name: string;
@@ -52,6 +53,10 @@ export function renameWorkspace(
   desired: string,
 ): Promise<{ oldName: string; name: string }>;
 export function projectPrefix(cwd?: string): Promise<string>;
+/** Top-level landing-state sidecar path for a workspace. */
+export function statePath(workspaceName: string): string;
+export function metadataPath(workspaceName: string): string;
+export function workspaceMetadata(workspaceName: string): Promise<WorkspaceMetadata | null>;
 /** Legacy per-workspace owner record; a live `pid` in it marks the workspace in use. */
 export function lockPath(workspaceName: string): string;
 export function removeWorkspace(
