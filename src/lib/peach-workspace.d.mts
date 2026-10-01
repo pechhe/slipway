@@ -106,6 +106,8 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   sweepOtherWorkspaces?: boolean;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
+  /** Environment for the background post-land verification; defaults to `environment`. */
+  postLandEnvironment?: () => NodeJS.ProcessEnv;
   /** Detached command that runs one post-land record file (appended), for a caller that exits after landing; long-lived hosts omit it and run in-process. */
   postLandRunner?: string[];
 }): Promise<LandingTail & {

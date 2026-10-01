@@ -40,6 +40,9 @@ export async function project(options: { ignore?: string; generatedPaths?: unkno
   git(["remote", "add", "origin", remote]);
   git(["push", "-q", "origin", "main"]);
   jj(repo, ["git", "init", "--colocate"]);
+  // Workspace commands do not see JJ_USER/JJ_EMAIL, so the author lives in repository config.
+  jj(repo, ["config", "set", "--repo", "user.name", "Fixture"]);
+  jj(repo, ["config", "set", "--repo", "user.email", "fixture@example.com"]);
   jj(repo, ["bookmark", "track", "main", "--remote", "origin"]);
   const remoteFile = (path: string) => execFileSync("git", ["--git-dir", remote, "show", `main:${path}`], { encoding: "utf8" });
   return { root, repo, remote, verified, remoteFile, dispose: () => rm(root, { recursive: true, force: true }) };

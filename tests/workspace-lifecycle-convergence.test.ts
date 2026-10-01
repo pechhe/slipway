@@ -144,3 +144,26 @@ test("cleanup refuses a checkout outside workspace storage", async () => {
     await f.dispose();
   }
 }, 120_000);
+
+test("a hung jj fetch times out instead of holding the landing", async () => {
+  const f = await project();
+  const hang = join(f.root, "hang-ssh");
+  await writeFile(hang, "#!/bin/sh\nexec sleep 600\n", { mode: 0o755 });
+  jj(f.repo, ["git", "remote", "set-url", "origin", "ssh://hang.invalid/remote.git"]);
+  // GIT_SSH_COMMAND reaches git as a credential key of the landing command environment.
+  process.env.GIT_SSH_COMMAND = hang;
+  process.env.PEACH_WORKSPACE_COMMAND_TIMEOUT_MS = "1500";
+  try {
+    const workspace = await createWorkspace("hung remote", f.repo);
+    await writeFile(join(workspace.workspacePath, "hung.txt"), "hung\n");
+    const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    assert.equal(result.ok, false);
+    assert.equal(result.publication.status, "push_failed");
+    assert.match(result.publication.reason ?? "", /timed out after/);
+    assert.equal(jj(f.repo, ["log", "-r", "main", "--no-graph", "-T", "commit_id"]), result.artifact.commitId, "the local integration is kept");
+  } finally {
+    delete process.env.GIT_SSH_COMMAND;
+    delete process.env.PEACH_WORKSPACE_COMMAND_TIMEOUT_MS;
+    await f.dispose();
+  }
+}, 120_000);

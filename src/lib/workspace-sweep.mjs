@@ -38,7 +38,7 @@ async function processWorkingDirectories() {
   }
   const result = await run("lsof", ["-n", "-P", "-w", "-d", "cwd", "-F", "n"]).catch(() => null);
   // lsof exits 1 when some processes could not be inspected; the rest is still valid.
-  if (!result || !result.stdout) return null;
+  if (!result || !result.stdout || result.truncated) return null;
   return result.stdout.split("\n").filter((line) => line.startsWith("n/")).map((line) => line.slice(1));
 }
 

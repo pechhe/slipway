@@ -9,7 +9,7 @@ import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { claimSpare } from "./workspace-lifecycle.mjs";
 import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { runWorkspaceCommand } from "./workspace-command.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { describePostLandFailure, latestPostLandResult, postLandChecks, startPostLandVerification } from "./post-land-verification.mjs";
@@ -79,25 +79,8 @@ async function readJsonOptional(path) {
   }
 }
 
-export async function run(command, args, options = {}) {
-  return await new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolveRun({ code: code ?? 1, signal, stdout, stderr }));
-  });
-}
+/** Bounded jj/git/gh runner with the landing command environment; see workspace-command. */
+export const run = runWorkspaceCommand;
 
 async function checked(command, args, options = {}) {
   const result = await run(command, args, options);
@@ -517,7 +500,9 @@ export async function prepareWorkspaceDependencies(workspacePath, options = {}) 
   const dependencyCommand = await workspaceDependencyCommand(workspacePath);
   if (!dependencyCommand) return { state: "not_required", packageManager: null };
   if (!options.quiet) console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
-  const result = await run(dependencyCommand.command, dependencyCommand.args, { cwd: workspacePath, inherit: !options.quiet, env: options.env });
+  // Installation is not a landing command: it keeps the user's environment and a longer deadline.
+  const result = await run(dependencyCommand.command, dependencyCommand.args,
+    { cwd: workspacePath, inherit: !options.quiet, env: options.env ?? process.env, timeoutMs: 30 * 60_000 });
   if (result.code !== 0) {
     throw new Error(
       `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
@@ -744,7 +729,7 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const result = await withVerificationSlot(() => withWorkspaceTransaction(`writer:${context.current.name}`, () => landInSlot(cwd, context, remote, options)),
     waitForLandingSlot(context, onProgress));
   // Started outside the landing slot, so an in-process run queues on its own.
-  const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.environment) };
+  const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.postLandEnvironment ?? options.environment) };
   // Release other disposable checkouts after every CLI/extension landing. A host
   // that owns its checkout records (Peach desktop) opts out and releases them
   // itself. The sweep never fails the landing.
