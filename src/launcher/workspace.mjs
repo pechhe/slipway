@@ -71,9 +71,14 @@ try {
     console.log(`Attached Issue #${result.issueNumber} to jj:${result.workspaceName}.`);
   } else if (command === "start") {
     const task = rest.join(" ").trim();
-    if (!task) throw new Error('Usage: peach-workspace start "task"');
-    const result = await createWorkspace(task);
-    console.log(result.workspacePath);
+    // A flag is a request for help or a typo, never a task to start a workspace for.
+    if (!task || task.startsWith("-")) {
+      console.error('Usage: peach-workspace start "task"');
+      process.exitCode = 2;
+    } else {
+      const result = await createWorkspace(task);
+      console.log(result.workspacePath);
+    }
   } else if (command === "preview") {
     const preview = await landingPreview();
     console.log(preview.stat || "(no changed files)");

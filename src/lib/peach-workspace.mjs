@@ -7,6 +7,7 @@ import { verificationSlotEnvironment, withVerificationSlot } from "./verificatio
 import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 
 import { claimSpare } from "./workspace-lifecycle.mjs";
+import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
@@ -336,30 +337,6 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
   await rm(statePath(workspaceName), { force: true });
   await rm(lockPath(workspaceName), { force: true });
   return { workspaceName, hasWork, issueNumber: metadata?.issueNumber ?? null };
-}
-
-export async function pruneEmptyWorkspaces(cwd = process.cwd()) {
-  const removed = [];
-  const skipped = [];
-  for (const workspace of await inspectWorkspaces(cwd)) {
-    if (
-      workspace.name === "default" ||
-      workspace.hasWork ||
-      workspace.metadata?.issueNumber ||
-      workspace.metadata?.spare
-    )
-      continue;
-    try {
-      await removeWorkspace(cwd, workspace.name);
-      removed.push(workspace.name);
-    } catch (error) {
-      skipped.push({
-        name: workspace.name,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return { removed, skipped };
 }
 
 export async function findWorkspace(cwd, name) {
@@ -783,6 +760,10 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   const result = await withVerificationSlot(() => landInSlot(cwd, context, remote, options), waitForLandingSlot(context, onProgress));
   // Started outside the landing slot, so an in-process run queues on its own.
   const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.environment) };
+  // Release other disposable checkouts after every CLI/extension landing. A host
+  // with its own checkout housekeeping (Peach's adapter) releases its records
+  // itself. The sweep never fails the landing.
+  if (result.ok && !options.adapter?.finish) await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined);
   return postLandFailure ? { ...started, postLandWarning: postLandFailure } : started;
 }
 
@@ -900,6 +881,7 @@ export async function prepareWorkspaceContinuation(task, cwd) {
 }
 
 export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
+export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";
 // For the installed CLI, which reports runs and is its own detached runner.
 export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";

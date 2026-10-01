@@ -50,6 +50,8 @@ export function renameWorkspace(
   desired: string,
 ): Promise<{ oldName: string; name: string }>;
 export function projectPrefix(cwd?: string): Promise<string>;
+/** Legacy per-workspace owner record; a live `pid` in it marks the workspace in use. */
+export function lockPath(workspaceName: string): string;
 export function removeWorkspace(
   cwd: string,
   workspaceName: string,
@@ -115,6 +117,7 @@ export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?:
   stat: string;
 }>;
 export { cleanupLandedWorkspace, provisionSpare, readySpares } from "./workspace-lifecycle.mjs";
+export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;
 

@@ -1,0 +1,132 @@
+import { jj, project } from "./support/workspace-project.ts";
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "vite-plus/test";
+import { attachWorkspaceIssue, createWorkspace, landWorkspace, lockPath, provisionSpare, pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "../src/lib/peach-workspace.mjs";
+import { EMPTY_IDLE_MS } from "../src/lib/workspace-sweep.mjs";
+
+const cli = fileURLToPath(new URL("../src/launcher/workspace.mjs", import.meta.url));
+const later = () => Date.now() + EMPTY_IDLE_MS + 60_000;
+const names = (repo: string) => jj(repo, ["workspace", "list", "-T", 'name ++ "\\n"']).split("\n").filter(Boolean);
+
+/** A process working inside `cwd` until disposed, as a live session would be. */
+function occupy(cwd: string) {
+  const child = spawn("sleep", ["60"], { cwd, stdio: "ignore" });
+  return () => child.kill();
+}
+
+async function land(cwd: string, file: string) {
+  await writeFile(join(cwd, file), `${file}\n`);
+  const result = await landWorkspace(cwd, { onProgress: () => {} });
+  assert.equal(result.ok, true, JSON.stringify(result.publication));
+}
+
+test("an idle empty workspace is swept, but not while recent, occupied or claimed", async () => {
+  const f = await project();
+  const release: Array<() => void> = [];
+  try {
+    const idle = await createWorkspace("idle", f.repo);
+    const occupied = await createWorkspace("occupied", f.repo);
+    const locked = await createWorkspace("locked", f.repo);
+    const issue = await createWorkspace("issue", f.repo);
+    await attachWorkspaceIssue(issue.workspacePath, 41);
+    await provisionSpare(f.repo);
+    release.push(occupy(occupied.workspacePath));
+    await mkdir(join(lockPath(locked.current.name), ".."), { recursive: true });
+    await writeFile(lockPath(locked.current.name), JSON.stringify({ version: 1, pid: process.pid }));
+
+    const recent = await sweepDisposableWorkspaces(f.repo);
+    assert.deepEqual(recent.removed, [], "nothing is removed before the idle threshold");
+
+    const swept = await sweepDisposableWorkspaces(f.repo, { now: later() });
+    assert.deepEqual(swept.removed, [idle.current.name]);
+    assert.equal(existsSync(idle.workspacePath), false);
+    const reasons = Object.fromEntries(swept.skipped.map(({ name, reason }) => [name, reason]));
+    assert.match(reasons[occupied.current.name] ?? "", /live process/);
+    assert.match(reasons[locked.current.name] ?? "", /live process/);
+    for (const kept of [occupied, locked, issue]) assert.ok(existsSync(kept.workspacePath), kept.current.name);
+    const remaining = names(f.repo);
+    assert.ok(remaining.includes(issue.current.name), "Issue workspaces are never swept");
+    assert.ok(remaining.some((name) => /-spare-/.test(name)), "spares are never swept");
+    assert.ok(!remaining.includes(idle.current.name));
+  } finally {
+    for (const dispose of release) dispose();
+    await f.dispose();
+  }
+}, 120_000);
+
+test("a workspace with unique untracked files is kept by sweep and prune", async () => {
+  const f = await project({ ignore: "notes/\n" });
+  try {
+    const kept = await createWorkspace("kept", f.repo);
+    await mkdir(join(kept.workspacePath, "notes"));
+    await writeFile(join(kept.workspacePath, "notes", "draft.md"), "mine\n");
+    const swept = await sweepDisposableWorkspaces(f.repo, { now: later() });
+    assert.deepEqual(swept.removed, []);
+    assert.match(swept.skipped[0]?.reason ?? "", /notes\/draft\.md/);
+    assert.deepEqual((await pruneEmptyWorkspaces(f.repo)).removed, []);
+    assert.ok(existsSync(join(kept.workspacePath, "notes", "draft.md")));
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+test("an explicit prune removes unused empty workspaces now but never an occupied one", async () => {
+  const f = await project();
+  let release = () => {};
+  try {
+    const unused = await createWorkspace("unused", f.repo);
+    const busy = await createWorkspace("busy", f.repo);
+    release = occupy(busy.workspacePath);
+    const result = await pruneEmptyWorkspaces(f.repo);
+    assert.deepEqual(result.removed, [unused.current.name]);
+    assert.deepEqual(result.skipped.map(({ name }) => name), [busy.current.name]);
+    assert.ok(existsSync(busy.workspacePath));
+  } finally {
+    release();
+    await f.dispose();
+  }
+}, 120_000);
+
+test("landing anywhere releases other delivered checkouts, but not one still in use", async () => {
+  const f = await project();
+  let release = () => {};
+  try {
+    const first = await createWorkspace("first", f.repo);
+    await land(first.workspacePath, "first.txt");
+    const busy = await createWorkspace("busy", f.repo);
+    await land(busy.workspacePath, "busy.txt");
+    assert.equal(existsSync(first.workspacePath), false, "the next landing released the first delivered checkout");
+    release = occupy(busy.workspacePath);
+    const last = await createWorkspace("last", f.repo);
+    await land(last.workspacePath, "last.txt");
+    assert.ok(existsSync(busy.workspacePath), "a delivered checkout with a live process is kept");
+    assert.ok(existsSync(last.workspacePath), "the landing never removes its own checkout");
+    assert.equal(f.remoteFile("last.txt"), "last.txt\n");
+  } finally {
+    release();
+    await f.dispose();
+  }
+}, 180_000);
+
+test("start with a flag prints usage and creates no workspace", async () => {
+  const f = await project();
+  try {
+    for (const flag of ["--help", "-h"]) {
+      const exit = await new Promise<{ code: number; stderr: string }>((resolveExit) => {
+        execFile(process.execPath, [cli, "start", flag], { cwd: f.repo }, (error, _stdout, stderr) =>
+          resolveExit({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, stderr }));
+      });
+      assert.equal(exit.code, 2);
+      assert.match(exit.stderr, /Usage: peach-workspace start/);
+    }
+    assert.deepEqual(names(f.repo), ["default"]);
+    assert.equal(await readFile(join(f.repo, "README.md"), "utf8"), "fixture\n");
+  } finally {
+    await f.dispose();
+  }
+});
