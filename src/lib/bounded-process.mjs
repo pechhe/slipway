@@ -110,10 +110,10 @@ export function runBoundedProcess(request) {
           stdio: [request.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
           detached: process.platform !== "win32"
         });
-        child.once("error", (cause) => Deferred.unsafeDone(completion, Effect.fail(new ProcessSpawnError({ cause }))));
+        child.once("error", (cause) => Deferred.doneUnsafe(completion, Effect.fail(new ProcessSpawnError({ cause }))));
         child.once("close", (exitCode, signal) => {
           closed = { exitCode, signal };
-          Deferred.unsafeDone(completion, Effect.void);
+          Deferred.doneUnsafe(completion, Effect.void);
         });
         child.stdout?.on("data", (chunk) => {
           fullStdoutHash?.update(chunk);
@@ -132,15 +132,15 @@ export function runBoundedProcess(request) {
     }) : Effect.void);
     if (request.input !== undefined)
       child.stdin?.end(request.input);
-    yield* Deferred.await(completion).pipe(Effect.timeoutFail({
+    yield* Deferred.await(completion).pipe(Effect.timeoutOrElse({
       duration: Math.max(1, Math.floor(request.timeoutMs)),
-      onTimeout: () => new ProcessDeadline
+      orElse: () => Effect.fail(new ProcessDeadline)
     }));
   }));
   return Effect.runPromiseExit(lifetime, { signal: request.abortSignal }).then((exit) => {
-    const failure = Exit.isFailure(exit) ? Cause.failureOption(exit.cause) : Option.none();
-    const cancelled = Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause);
-    if (Exit.isFailure(exit) && Option.isNone(failure) && !Cause.isInterruptedOnly(exit.cause)) {
+    const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none();
+    const cancelled = Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause);
+    if (Exit.isFailure(exit) && Option.isNone(failure) && !Cause.hasInterruptsOnly(exit.cause)) {
       throw Cause.squash(exit.cause);
     }
     const error = Option.isSome(failure) && failure.value._tag === "ProcessSpawnError" ? redactError(failure.value.cause, request.redactOutput) : undefined;

@@ -78,7 +78,7 @@ function withTargetLease(directory, identity, operation) {
       try: () => operation(abort.signal),
       catch: (cause) => cause instanceof Error ? cause : new Error("Post-integration operation failed"),
     }),
-    (release) => Effect.promise(release),
+    (release) => Effect.promise(() => release()),
   ));
 }
 
