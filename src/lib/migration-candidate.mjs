@@ -1,5 +1,7 @@
 /** Late-bound migration source belongs to the shared, serialized landing path. */
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
+import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
+import { migrationCommandFailure, redactMigrationOutput } from "./migration-command-evidence.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
 import { verificationSlotEnvironment } from "./verification-slot.mjs";
 
@@ -20,16 +22,22 @@ export async function migrationCandidate(cwd, context, io, options = {}) {
       if (semanticPaths.some(file => matches(policy.artifactPaths, file))) throw new Error("Late-bound migration artifacts must be generated during landing, not committed in the semantic candidate");
       // The candidate may be @- below an empty child; generation must edit it.
       const originalWorkingCopy = await io.revisionFacts(cwd, "@");
-      generated = { semantic: candidate, originalWorkingCopy, finalized: null, base };
+      const originalParents = await io.jj(cwd, ["log", "-r", "parents(@)", "--no-graph", "-T", 'commit_id ++ "\\n"']);
+      generated = { semantic: candidate, originalWorkingCopy, originalParents: originalParents.trim(), finalized: null, base };
       await io.jj(cwd, ["edit", candidate.changeId]);
       const run = async declaration => {
         const commandRoot = await checkoutCwd(context.current.root, declaration.cwd, "Migration command");
-        options.onProgress?.(`[migration] ${declaration.executable} ${declaration.args.join(" ")}`);
-        const result = await (options.runCommand ?? runBoundedProcess)({ ...declaration, cwd: commandRoot, timeoutMs: 3600000, maxOutputBytes: 65536, env: verificationSlotEnvironment((options.environment ?? sanitizedProcessEnv)()) });
+        const environment = verificationSlotEnvironment((options.environment ?? sanitizedProcessEnv)());
+        options.onProgress?.(`[migration] ${redactMigrationOutput([declaration.executable, ...declaration.args].join(" "), context.current.root, { ...process.env, ...environment }).slice(0, 1000)}`);
+        const result = await (options.runCommand ?? runBoundedProcess)({ ...declaration, cwd: commandRoot, timeoutMs: 3600000, maxOutputBytes: 65536, env: environment, redactOutput: value => redactMigrationOutput(value, context.current.root, { ...process.env, ...environment }) });
         if (result.exitCode !== 0 || result.timedOut || result.cancelled || result.signal || result.error)
-          throw new Error("Migration finalization command " + declaration.executable + " " + declaration.args.join(" ") + " " + (result.timedOut ? "timed out" : result.cancelled ? "was cancelled" : result.signal ? "was terminated" : result.error ? "could not start" : "exited with code " + result.exitCode));
+          throw migrationCommandFailure([declaration.executable, ...declaration.args].join(" "), result, context.current.root, { ...process.env, ...environment });
       };
       try {
+        options.onProgress?.("[migration] preparing frozen candidate dependencies");
+        await prepareWorkspaceDependencies(context.current.root, { quiet: true, env: verificationSlotEnvironment(process.env) });
+        if ((await io.revisionFacts(cwd, candidate.changeId)).commitId !== candidate.commitId)
+          throw new Error("Dependency preparation changed the committed migration candidate; preserve and reconcile source before landing");
         await run(policy.generate);
         await io.jj(cwd, ["status"]);
         await run(policy.verify);
@@ -53,14 +61,35 @@ export async function migrationCandidate(cwd, context, io, options = {}) {
     },
     async rollback() {
       if (!generated) return;
-      const { semantic, finalized, originalWorkingCopy } = generated;
+      const { semantic, finalized, originalWorkingCopy, originalParents } = generated;
       if ((await io.revisionFacts(cwd, context.integrationBranch)).commitId === finalized?.commitId) return;
       const current = await io.revisionFacts(cwd, semantic.changeId);
       if (!finalized || current.commitId !== finalized.commitId)
         throw new Error("Migration candidate changed after generation; preserve it for reconciliation");
       // Restore only this candidate's tree. Never rewind the shared JJ operation log.
       await io.jj(cwd, ["restore", "--from", semantic.commitId, "--into", semantic.changeId]);
-      if (originalWorkingCopy.changeId !== semantic.changeId) await io.jj(cwd, ["edit", originalWorkingCopy.changeId]);
+      if (originalWorkingCopy.changeId !== semantic.changeId) {
+        // Editing its parent abandons an empty child; its old change ID no
+        // longer resolves. Restore the checkout shape without rewinding history.
+        const retained = await io.jj(cwd, ["log", "-r", `present(${originalWorkingCopy.changeId})`, "--no-graph", "-T", "commit_id"]);
+        if (retained) {
+          // Rebase of the empty descendant may change its commit ID; its tree
+          // must still be empty and its sole parent must be this candidate.
+          const facts = await io.revisionFacts(cwd, originalWorkingCopy.changeId);
+          if (facts.empty && originalWorkingCopy.empty) {
+            const parents = await io.jj(cwd, ["log", "-r", `parents(${originalWorkingCopy.changeId})`, "--no-graph", "-T", 'commit_id ++ "\\n"']);
+            if (parents.trim() !== (await io.revisionFacts(cwd, semantic.changeId)).commitId)
+              throw new Error("Original migration checkout ancestry changed; preserve it for reconciliation");
+          } else {
+            if (facts.commitId !== originalWorkingCopy.commitId) throw new Error("Original migration checkout changed; preserve it for reconciliation");
+          }
+          await io.jj(cwd, ["edit", originalWorkingCopy.changeId]);
+        } else {
+          if (!originalWorkingCopy.empty || originalParents !== semantic.commitId)
+            throw new Error("Original migration checkout cannot be safely recreated; preserve it for reconciliation");
+          await io.jj(cwd, ["new", semantic.changeId]);
+        }
+      }
     }
   };
 }

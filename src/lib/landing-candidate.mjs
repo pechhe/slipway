@@ -47,7 +47,7 @@ export async function integrateLandingCandidate(cwd, options, io) {
     return { context, artifact: candidate, base: base.commitId, verification, ...cleanup };
   } catch (error) {
     try { await migration.rollback(); } catch (rollbackError) {
-      throw new AggregateError([error, rollbackError], "Landing failed and migration rollback requires reconciliation");
+      throw new AggregateError([error, rollbackError], `Landing failed and migration rollback requires reconciliation\n${error instanceof Error ? error.message : String(error)}\nRollback could not restore the checkout; retained errors require reconciliation`);
     }
     throw error;
   }

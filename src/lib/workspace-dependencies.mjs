@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { migrationCommandFailure } from "./migration-command-evidence.mjs";
 import { installInputFingerprint } from "./install-inputs.mjs";
 import { runWorkspaceCommand as run } from "./workspace-command.mjs";
 
@@ -45,9 +46,7 @@ export async function prepareWorkspaceDependencies(workspacePath, options = {}) 
   const result = await run(dependencyCommand.command, dependencyCommand.args,
     { cwd: workspacePath, inherit: !options.quiet, env: options.env ?? process.env, timeoutMs: 30 * 60_000 });
   if (result.code !== 0) {
-    throw new Error(
-      `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
-    );
+    throw migrationCommandFailure([dependencyCommand.command, ...dependencyCommand.args].join(" "), result, workspacePath, options.env ?? process.env, "Dependency");
   }
   const installed = inputs && await installInputFingerprint(workspacePath);
   return { state: "ready", packageManager: dependencyCommand.command, installInputs: installed === inputs ? inputs : null };
