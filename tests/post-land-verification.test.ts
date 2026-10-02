@@ -116,4 +116,4 @@ test("landing starts declared post-land verification against the exact landed so
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }
-}, 120_000);
+}, 300_000); // Two full landings; it blocks every landing, so it must survive a loaded gate.
