@@ -13,7 +13,7 @@ import { runBoundedProcess } from "./bounded-process.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
 import { withFinalizationSource } from "./post-integration-source.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
-import { linkPostLandIssue, openPostLandIssue } from "./post-land-issue.mjs";
+import { linkPostLandIssue, openPostLandIssue, pendingIssueRetry } from "./post-land-issue.mjs";
 
 const RETAINED_RECORDS = 30;
 const CHECK_TIMEOUT_MS = 45 * 60_000;
@@ -109,9 +109,9 @@ export function describePostLandFailure(record) {
  * Open (once) and link the failure Issue on `record.issue`. `save` persists the
  * URL before linking, so a restart reuses the Issue instead of opening another.
  */
-async function reportFailure(record, env, gh, save = async () => {}) {
+async function reportFailure(record, env, issueOptions = {}, save = async () => {}) {
   if (record.status !== "failed" && record.status !== "error") return;
-  const options = gh ? { env, gh } : { env };
+  const options = { env, ...issueOptions };
   record.issue = await openPostLandIssue(record, options);
   await save();
   record.issue = await linkPostLandIssue(record, options);
@@ -145,10 +145,31 @@ async function runChecks(record, update, baseEnv) {
 }
 
 /**
- * One run: wait for earlier runs, verify, record the outcome, and open a failure
- * Issue. `env` is the landing's command environment; `gh` is injectable for tests.
+ * Retry opening the Issue of each finished run on `integrationRoot` whose earlier
+ * attempt failed transiently, up to the attempt bound. Retries for one repository
+ * serialise on their own slot and re-read the record inside it, so concurrent
+ * runs never open a second Issue for the same landed commit.
  */
-export async function runPostLandVerification(file, env = process.env, { gh } = {}) {
+export async function retryPostLandIssues(integrationRoot, env = process.env, issueOptions = {}, except = null) {
+  const pending = (await readRecords()).filter((record) => record.integrationRoot === integrationRoot && record.commit !== except
+    && record.finishedAt && pendingIssueRetry(record));
+  for (const { commit } of pending) {
+    await withVerificationSlot(async () => {
+      const file = recordFile(commit);
+      const record = await readFile(file, "utf8").then(JSON.parse).catch(() => null);
+      if (!record?.finishedAt || !pendingIssueRetry(record)) return;
+      await reportFailure(record, env, issueOptions, () => writeFile(file, JSON.stringify(record, null, 2), { mode: 0o600 }));
+    }, { root: path.join(postLandRoot(), "issues"), scope: integrationRoot, env: {}, label: `post-land-issue:${commit.slice(0, 12)}` });
+  }
+}
+
+/**
+ * One run: wait for earlier runs, verify, record the outcome, and open a failure
+ * Issue, then retry earlier runs' transiently failed Issues for the repository.
+ * `env` is the landing's command environment; `gh` and the retry `schedule` are
+ * injectable for tests.
+ */
+export async function runPostLandVerification(file, env = process.env, issueOptions = {}) {
   const record = JSON.parse(await readFile(file, "utf8"));
   const update = async (fields) => {
     Object.assign(record, fields);
@@ -164,6 +185,8 @@ export async function runPostLandVerification(file, env = process.env, { gh } = 
     await update({ status: "error", reason: error instanceof Error ? error.message : String(error) });
   }
   // Outside the verification slot: GitHub calls never hold up the next run.
-  await reportFailure(record, env, gh, () => update({}));
+  await reportFailure(record, env, issueOptions, () => update({}));
   await update({ finishedAt: new Date().toISOString() });
+  // This run's own Issue was just attempted; the next invocation retries it.
+  await retryPostLandIssues(record.integrationRoot, env, issueOptions, record.commit).catch(() => {});
 }

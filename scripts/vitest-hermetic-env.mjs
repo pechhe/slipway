@@ -8,12 +8,16 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll } from "vite-plus/test";
+import { assertHermeticHome } from "./hermetic-home-guard.mjs";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "peach-test-home-")));
 process.env.HOME = home;
 delete process.env.XDG_CONFIG_HOME;
 delete process.env.XDG_STATE_HOME;
 delete process.env.XDG_DATA_HOME;
+// A runtime that resolves homedir() once at startup (Bun) ignores the new HOME;
+// fail the file rather than let it write the real ~/.pi.
+assertHermeticHome();
 
 // Host session variables describe the coding agent running the tests, not the
 // fixture. Leaving them set lets fixtures open real terminal tabs or inherit

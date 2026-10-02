@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Schedule } from "effect";
 import { test } from "vite-plus/test";
+import { assertHermeticHome } from "../../../scripts/hermetic-home-guard.mjs";
 import { landWorkspace } from "../src/lib/peach-workspace.mjs";
-import { githubRepository, originatingIssue, postLandIssueBody, postLandIssueTitle } from "../src/lib/post-land-issue.mjs";
-import { describePostLandFailure, latestPostLandResult, postLandRoot, runPostLandVerification, startPostLandVerification, type PostLandRecord } from "../src/lib/post-land-verification.mjs";
+import { githubRepository, MAX_ISSUE_ATTEMPTS, originatingIssue, pendingIssueRetry, postLandIssueBody, postLandIssueTitle } from "../src/lib/post-land-issue.mjs";
+import { describePostLandFailure, latestPostLandResult, postLandRoot, retryPostLandIssues, runPostLandVerification, startPostLandVerification, type PostLandRecord } from "../src/lib/post-land-verification.mjs";
+
+// These tests write post-land records; outside the hermetic setup they would
+// land in the developer's real ~/.pi/agent/workspace-state (#991).
+assertHermeticHome();
 
 const jj = (cwd: string, args: string[]) =>
   execFileSync("jj", ["--color=never", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -69,6 +75,14 @@ async function finished(repo: string, commit: string): Promise<PostLandRecord> {
   throw new Error(`Post-land run for ${commit} did not finish.\nRecord: ${record}\nLog: ${log}`);
 }
 
+test("the hermetic guard refuses the account's real home and accepts a disposable one", () => {
+  assert.throws(() => assertHermeticHome("/Users/someone", "/Users/someone"), /hermetic HOME/);
+  assert.throws(() => assertHermeticHome("/Users/someone/", "/Users/someone"), /hermetic HOME/);
+  assert.doesNotThrow(() => assertHermeticHome("/tmp/peach-test-home-x", "/Users/someone"));
+  assert.notEqual(path.resolve(homedir()), path.resolve(userInfo().homedir), "this file runs under a disposable HOME");
+  assert.ok(postLandRoot().startsWith(homedir()));
+});
+
 test("a post-land run whose process died before recording a result is reported, not left queued", async () => {
   const commit = "d".repeat(40);
   const exited = execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
@@ -112,7 +126,7 @@ test("landing starts declared post-land verification against the exact landed so
     assert.equal(failure.failed?.exitCode, 3);
     assert.equal(failure.description, "Set broken");
     assert.match(failure.diffStat ?? "", /value\.txt/);
-    assert.deepEqual(failure.issue, { status: "not_opened", reason: "the repository has no GitHub remote" });
+    assert.deepEqual(failure.issue, { status: "not_opened", reason: "the repository has no GitHub remote", transient: false });
 
     const next = await f.land("fixed");
     assert.match(next.landed.postLandWarning ?? "", new RegExp(`${broken.landed.artifact.commitId.slice(0, 12)} failed`));
@@ -189,7 +203,7 @@ test("a failed run opens one linked Issue, and a rerun of the same record reuses
 test("without a GitHub remote or gh authentication, a failed run records why no Issue was opened", async () => {
   const noRemote = await erroringRecord({ commit: "2".repeat(40), repository: null });
   await runPostLandVerification(noRemote.file, process.env, { gh: async () => assert.fail("gh must not run without a GitHub remote") });
-  assert.deepEqual((await noRemote.read()).issue, { status: "not_opened", reason: "the repository has no GitHub remote" });
+  assert.deepEqual((await noRemote.read()).issue, { status: "not_opened", reason: "the repository has no GitHub remote", transient: false });
   assert.ok((await noRemote.read()).finishedAt);
 
   const unauthenticated = await erroringRecord({ commit: "3".repeat(40) });
@@ -198,6 +212,71 @@ test("without a GitHub remote or gh authentication, a failed run records why no 
   assert.equal(record.issue?.status, "not_opened");
   assert.match(record.issue?.reason ?? "", /gh auth login required/);
   assert.ok(record.finishedAt, "the run still finishes");
+});
+
+const noDelay = { schedule: Schedule.spaced(0) };
+const TIMEOUT = "gh issue create failed: timed out after 60s";
+
+/** A `gh` that fails `issue create` with each reason in turn, then opens Issue 99. */
+function flakyGh(...failures: string[]) {
+  const creates: string[][] = [];
+  const gh = async (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "create") {
+      creates.push(args);
+      const failure = failures.shift();
+      if (failure) throw new Error(failure);
+      return "https://github.com/owner/repo/issues/99";
+    }
+    if (args[0] === "api" && args[1] === "repos/owner/repo/issues/99") return "123456";
+    return "";
+  };
+  return { gh, creates };
+}
+
+test("a transient gh failure is retried with backoff within the run until the Issue opens", async () => {
+  const { file, read } = await erroringRecord({ commit: "4".repeat(40), integrationRoot: "/retry-in-run" });
+  const { gh, creates } = flakyGh(TIMEOUT, "gh issue create failed: HTTP 502: Bad Gateway");
+  await runPostLandVerification(file, process.env, { gh, ...noDelay });
+  assert.equal(creates.length, 3);
+  assert.equal((await read()).issue?.url, "https://github.com/owner/repo/issues/99");
+});
+
+test("a permanent gh failure is recorded once and never retried", async () => {
+  const root = "/retry-permanent";
+  const { file, read } = await erroringRecord({ commit: "5".repeat(40), integrationRoot: root });
+  const { gh, creates } = flakyGh("gh issue create failed: To get started with GitHub CLI, please run: gh auth login");
+  await runPostLandVerification(file, process.env, { gh, ...noDelay });
+  assert.equal(creates.length, 1, "no in-run retry");
+  const record = await read();
+  assert.equal(record.issue?.status, "not_opened");
+  assert.equal(record.issue?.transient, false);
+  assert.equal(pendingIssueRetry(record), false);
+  await retryPostLandIssues(root, process.env, { gh, ...noDelay });
+  assert.equal(creates.length, 1, "no later retry");
+});
+
+test("a transient failure that outlasts the run is retried by the next post-land invocation, once, up to a bound", async () => {
+  const root = "/retry-next-run";
+  const { file, read } = await erroringRecord({ commit: "6".repeat(40), integrationRoot: root });
+  const outage = flakyGh(TIMEOUT, TIMEOUT, TIMEOUT);
+  await runPostLandVerification(file, process.env, { gh: outage.gh, ...noDelay });
+  const lost = await read();
+  assert.equal(outage.creates.length, 3);
+  assert.deepEqual([lost.issue?.status, lost.issue?.transient, lost.issue?.attempts], ["not_opened", true, 1]);
+  assert.ok(lost.finishedAt);
+
+  // The next landing's post-land run on the same repository opens it.
+  const next = await erroringRecord({ commit: "7".repeat(40), integrationRoot: root, repository: null });
+  const recovered = flakyGh();
+  await runPostLandVerification(next.file, process.env, { gh: recovered.gh, ...noDelay });
+  assert.equal(recovered.creates.length, 1);
+  assert.deepEqual((await read()).issue, { status: "opened", url: "https://github.com/owner/repo/issues/99", link: { status: "linked", originatingIssue: 42 } });
+  await retryPostLandIssues(root, process.env, { gh: recovered.gh, ...noDelay });
+  assert.equal(recovered.creates.length, 1, "an opened Issue is never opened again");
+
+  // An earlier-format record (reason only) is classified by its reason; the bound stops retries.
+  assert.equal(pendingIssueRetry({ ...lost, issue: { status: "not_opened", reason: "gh issue create failed: timeout" } }), true);
+  assert.equal(pendingIssueRetry({ ...lost, issue: { ...lost.issue!, attempts: MAX_ISSUE_ATTEMPTS } }), false);
 });
 
 test("landing refuses a change with no description, workspace Issue or task", async () => {

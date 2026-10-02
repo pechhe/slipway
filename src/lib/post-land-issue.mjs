@@ -4,9 +4,16 @@
  * session. The record is the idempotency key: once it names an Issue URL, no
  * other Issue is opened for that landed commit.
  */
+import { Effect, Schedule } from "effect";
 import { runBoundedProcess } from "./bounded-process.mjs";
 
 const GH_TIMEOUT_MS = 60_000;
+const NO_REMOTE = "the repository has no GitHub remote";
+/** `gh issue create` tries per invocation: the first plus two backed-off retries. */
+const IN_RUN_RETRIES = 2;
+const RETRY_SCHEDULE = Schedule.exponential("5 seconds");
+/** Invocations (a run's own report, then later post-land runs) before a transient failure is abandoned. */
+export const MAX_ISSUE_ATTEMPTS = 5;
 
 /** `owner/name` of a GitHub remote in `jj git remote list` output, preferring `preferred`. */
 export function githubRepository(remoteList, preferred) {
@@ -75,26 +82,54 @@ export function postLandIssueBody(record) {
 
 const ghRunner = (env) => async (args) => {
   const result = await runBoundedProcess({ executable: "gh", args, cwd: process.cwd(), env, timeoutMs: GH_TIMEOUT_MS, maxOutputBytes: 1024 * 1024 });
-  if (result.exitCode !== 0) throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${(result.stderr || result.stdout || result.signal || "timeout").toString().trim()}`);
+  if (result.exitCode !== 0) {
+    const detail = result.timedOut ? `timed out after ${GH_TIMEOUT_MS / 1000}s` : (result.stderr || result.stdout || result.signal || "timeout").toString().trim();
+    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${detail}`);
+  }
   return result.stdout.trim();
 };
 
+// Failures that may succeed later: timeouts, network errors, GitHub 5xx and rate
+// limits. Anything else (no auth, no access, validation) is permanent.
+const TRANSIENT = /\btime(?:d )?out\b|SIGTERM|SIGKILL|ETIMEDOUT|ECONN(?:RESET|REFUSED|ABORTED)|EAI_AGAIN|ENOTFOUND|EPIPE|\bnetwork\b|\bconnection\b|could not resolve|TLS handshake|unexpected EOF|HTTP 5\d\d|\b5\d\d (?:Internal|Bad Gateway|Service Unavailable|Gateway Time)|HTTP 429|rate limit/i;
+
+/** Whether a `gh` failure reason is worth retrying. */
+export function transientIssueFailure(reason) {
+  return reason !== NO_REMOTE && TRANSIENT.test(reason ?? "");
+}
+
+/**
+ * Whether a later post-land invocation should try again to open this record's
+ * Issue. Records written before failures were classified carry only a reason.
+ */
+export function pendingIssueRetry(record) {
+  const issue = record?.issue;
+  if ((record?.status !== "failed" && record?.status !== "error") || issue?.status !== "not_opened" || issue.url) return false;
+  return (issue.transient ?? transientIssueFailure(issue.reason)) && (issue.attempts ?? 1) < MAX_ISSUE_ATTEMPTS;
+}
+
 /**
  * The `issue` field for a finished record. Never throws: a missing remote or
- * `gh` failure becomes `not_opened` with its reason. `gh` is injectable for tests.
+ * `gh` failure becomes `not_opened` with its reason, whether it is `transient`,
+ * and how many invocations have tried. A transient failure is retried with
+ * backoff within this invocation. `gh` and the retry `schedule` are injectable for tests.
  */
-export async function openPostLandIssue(record, { env = process.env, gh = ghRunner(env) } = {}) {
+export async function openPostLandIssue(record, { env = process.env, gh = ghRunner(env), schedule = RETRY_SCHEDULE } = {}) {
   if (record.issue?.url) return record.issue;
   if (record.status !== "failed" && record.status !== "error") return record.issue;
   const repository = record.repository;
-  if (!repository) return { status: "not_opened", reason: "the repository has no GitHub remote" };
-  let url;
-  try {
-    url = await gh(["issue", "create", "--repo", repository, "--title", postLandIssueTitle(record), "--body", postLandIssueBody(record), "--label", "bug"]);
-    url = url.split(/\r?\n/).find((line) => line.startsWith("https://github.com/")) ?? url;
-  } catch (error) {
-    return { status: "not_opened", reason: error instanceof Error ? error.message : String(error) };
+  if (!repository) return { status: "not_opened", reason: NO_REMOTE, transient: false };
+  const attempts = (record.issue?.status === "not_opened" ? record.issue.attempts ?? 1 : 0) + 1;
+  const reasonOf = (error) => error instanceof Error ? error.message : String(error);
+  const create = Effect.tryPromise({
+    try: () => gh(["issue", "create", "--repo", repository, "--title", postLandIssueTitle(record), "--body", postLandIssueBody(record), "--label", "bug"]),
+    catch: reasonOf,
+  }).pipe(Effect.retry({ schedule, times: IN_RUN_RETRIES, while: transientIssueFailure }), Effect.result);
+  const result = await Effect.runPromise(create);
+  if (result._tag === "Failure") {
+    return { status: "not_opened", reason: result.failure, transient: transientIssueFailure(result.failure), attempts };
   }
+  const url = result.success.split(/\r?\n/).find((line) => line.startsWith("https://github.com/")) ?? result.success;
   return { status: "opened", url };
 }
 

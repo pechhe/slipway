@@ -1,3 +1,4 @@
+import type { Schedule } from "effect";
 export type PostLandCheck = { executable: string; args: string[]; cwd?: string };
 export type PostLandRecord = {
   version: 1;
@@ -25,10 +26,15 @@ export type PostLandIssue = {
   status: "opened" | "not_opened";
   url?: string;
   reason?: string;
+  /** For `not_opened`: whether the failure may succeed later (timeout, network, 5xx), so a later post-land run retries it. */
+  transient?: boolean;
+  /** For `not_opened`: invocations that have tried to open the Issue. */
+  attempts?: number;
   link?: { status: "linked" | "not_linked"; originatingIssue: number; reason?: string };
 };
 export type PostLandLanding = Pick<PostLandRecord, "description" | "diffStat" | "originatingIssue" | "repository">;
 export type GhRunner = (args: string[]) => Promise<string>;
+export type PostLandIssueOptions = { gh?: GhRunner; schedule?: Schedule.Schedule<unknown, string> };
 export function postLandRoot(): string;
 export function startPostLandVerification(input: {
   integrationRoot: string; gitDirectory: string; base: string; commit: string; checks: PostLandCheck[];
@@ -38,4 +44,5 @@ export function startPostLandVerification(input: {
 }): Promise<PostLandRecord>;
 export function latestPostLandResult(integrationRoot: string): Promise<PostLandRecord | null>;
 export function describePostLandFailure(record: PostLandRecord | null): string | null;
-export function runPostLandVerification(recordFile: string, env?: NodeJS.ProcessEnv, options?: { gh?: GhRunner }): Promise<void>;
+export function runPostLandVerification(recordFile: string, env?: NodeJS.ProcessEnv, options?: PostLandIssueOptions): Promise<void>;
+export function retryPostLandIssues(integrationRoot: string, env?: NodeJS.ProcessEnv, options?: PostLandIssueOptions, except?: string | null): Promise<void>;
