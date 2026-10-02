@@ -112,7 +112,7 @@ export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?:
   target: RevisionFacts;
   stat: string;
 }>;
-export { cleanupLandedWorkspace, provisionSpare, readySpares, removeWorkspace, retireWorkspace, withinWorkspaceStorage, type RetirementHooks } from "./workspace-lifecycle.mjs";
+export { cleanupLandedWorkspace, provisionSpare, readySpares, removeWorkspace, retireWorkspace, startSpareRefill, withinWorkspaceStorage, type RetirementHooks } from "./workspace-lifecycle.mjs";
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 export { createWorkspace, findIssueWorkspace, recoverIssueWorkspace, type CreatedWorkspace, type WorkspaceCreationHooks } from "./workspace-create.mjs";
 import type { createWorkspace } from "./workspace-create.mjs";

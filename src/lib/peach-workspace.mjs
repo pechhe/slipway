@@ -10,6 +10,7 @@ import { createWorkspace } from "./workspace-create.mjs";
 import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 import { randomUUID } from "node:crypto";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
+import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { describePostLandFailure, latestPostLandResult, startPostLandVerification } from "./post-land-verification.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -446,9 +447,15 @@ async function workspaceDependencyCommand(workspacePath) {
   throw new Error(`Workspace dependency provisioning does not support package manager '${packageManager}'.`);
 }
 
+/**
+ * Install the workspace's dependencies. With `recordInputs`, the result also
+ * carries the install-input fingerprint (see install-inputs.mjs) of the tree it
+ * installed, or null when that tree is unknown or the install changed it.
+ */
 export async function prepareWorkspaceDependencies(workspacePath, options = {}) {
+  const inputs = options.recordInputs ? await installInputFingerprint(workspacePath) : null;
   const dependencyCommand = await workspaceDependencyCommand(workspacePath);
-  if (!dependencyCommand) return { state: "not_required", packageManager: null };
+  if (!dependencyCommand) return { state: "not_required", packageManager: null, installInputs: inputs };
   if (!options.quiet) console.log(`[deps] ${dependencyCommand.command} install in ${basename(workspacePath)}...`);
   // Installation is not a landing command: it keeps the user's environment and a longer deadline.
   const result = await run(dependencyCommand.command, dependencyCommand.args,
@@ -458,7 +465,8 @@ export async function prepareWorkspaceDependencies(workspacePath, options = {}) 
       `Dependency installation failed in ${workspacePath}; fix it before starting Pi here.`,
     );
   }
-  return { state: "ready", packageManager: dependencyCommand.command };
+  const installed = inputs && await installInputFingerprint(workspacePath);
+  return { state: "ready", packageManager: dependencyCommand.command, installInputs: installed === inputs ? inputs : null };
 }
 
 export async function revisionFacts(cwd, revision) {
@@ -758,7 +766,7 @@ export async function prepareWorkspaceContinuation(task, cwd) {
   return createWorkspace(task, context.integration.root);
 }
 
-export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, removeWorkspace, retainedWorkspaceMaterial, retireWorkspace, withinWorkspaceStorage } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
+export { cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, removeWorkspace, retainedWorkspaceMaterial, retireWorkspace, startSpareRefill, withinWorkspaceStorage } from "./workspace-lifecycle.mjs"; // for the installed launcher/CLI
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 export { createWorkspace, findIssueWorkspace, recoverIssueWorkspace } from "./workspace-create.mjs";
 export { normalizeDeclaredVerification } from "./verification-policy.mjs";

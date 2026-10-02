@@ -1,7 +1,19 @@
 import type { WorkspaceEntry } from "./peach-workspace.mjs";
 export function readySpares(cwd: string): Promise<WorkspaceEntry[]>;
 export function provisionSpare(cwd?: string): Promise<{ provisioned: boolean; reason?: string; workspacePath?: string }>;
-export function claimSpare(cwd: string, name: string): Promise<{ root: string; name: string } | null>;
+/** A claimed spare's provisioned dependencies, reused because its install inputs are unchanged. */
+export interface ReusedDependencies {
+  state: "ready" | "not_required";
+  packageManager: string | null;
+  installInputs: string;
+  reused: true;
+}
+export function claimSpare(cwd: string, name: string): Promise<{ root: string; name: string; dependencies: ReusedDependencies | null } | null>;
+/** Start a detached, `nice`d `provisionSpare` for the repository of `cwd`; resolves once the child has spawned. */
+export function startSpareRefill(
+  cwd?: string,
+  options?: { command?: string[] },
+): Promise<{ started: boolean; pid?: number; logPath?: string; reason?: string }>;
 export function uniqueUntrackedMaterial(root: string, limit?: number, generated?: RegExp[]): Promise<string[]>;
 export function retainedWorkspaceMaterial(root: string, integrationRoot: string, limit?: number): Promise<string[]>;
 export function describeRetention(result: { reason?: string; paths?: string[] } | null | undefined): string;

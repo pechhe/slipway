@@ -270,11 +270,17 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
   return withWorkspaceTransaction(`allocate:${context.integration.root}`, () => createWorkspaceUnlocked(task, cwd, options));
 }
 
-/** Record the task (and Issue), make the checkout ready and report its acquisition. */
-async function assigned(hooks, context, task, { issueNumber, attach = true, workspacePath = context.current.root, ...result }) {
+/**
+ * Record the task (and Issue), make the checkout ready and report its acquisition.
+ * `prepared` is a claimed spare's still-exact provisioned readiness, used instead
+ * of reinstalling. Resumed and bound workspaces always reinstall: commands run in
+ * them may have changed `node_modules` without changing the install inputs.
+ */
+async function assigned(hooks, context, task, { issueNumber, attach = true, workspacePath = context.current.root, prepared, ...result }) {
   await writeWorkspaceTaskMetadata(context, task);
   if (issueNumber && attach) await attachWorkspaceIssue(context.current.root, issueNumber);
-  const readiness = await prepare(hooks, context.integration.root, context.current.root);
+  if (prepared) console.error(`[deps] ${basename(context.current.root)}: install inputs unchanged since the spare was prepared; reusing its dependencies`);
+  const readiness = prepared ?? await prepare(hooks, context.integration.root, context.current.root);
   acquired(hooks, context, issueNumber);
   return { ...context, context, pooled: false, ...result, workspacePath, readiness };
 }
@@ -318,5 +324,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   await applyWorkspaceAuthorIdentity(context.integration.root, workspacePath);
   const created = await workspaceContext(workspacePath);
   if (!created || created.current.name !== name) throw new Error("Created workspace could not be verified");
-  return assigned(hooks, created, task, { issueNumber, created: true, reused: false, pooled: Boolean(spare), workspacePath });
+  // A host with its own readiness authority (Peach's `prepare` hook) always decides itself.
+  const prepared = hooks.prepare ? undefined : spare?.dependencies ?? undefined;
+  return assigned(hooks, created, task, { issueNumber, created: true, reused: false, pooled: Boolean(spare), workspacePath, prepared });
 }

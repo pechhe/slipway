@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -20,6 +21,7 @@ import {
   workspaceMetadata,
 } from "./peach-workspace.mjs";
 import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
+import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { cleanupRetentionReason } from "./workspace-delivery-lifecycle.mjs";
 import { archiveIntegratedWorkspaceEvidence } from "./workspace-finalization.mjs";
@@ -68,29 +70,96 @@ export async function provisionSpare(cwd = process.cwd()) {
       });
     }
     // An interrupted preparation remains unassigned and can be retried here.
-    await prepareWorkspaceDependencies(workspacePath, { quiet: true });
-    await writeWorkspaceJson(metadataPath(name), { ...await workspaceMetadata(name), prepared: true });
+    const { state, packageManager, installInputs } = await prepareWorkspaceDependencies(workspacePath, { quiet: true, recordInputs: true });
+    await writeWorkspaceJson(metadataPath(name), {
+      ...await workspaceMetadata(name), prepared: true, preparedDependencies: { state, packageManager, installInputs },
+    });
     return { provisioned: true, workspacePath };
   });
 }
 
 /**
+ * The spare's provisioned dependencies as readiness, when they are still exactly
+ * what installing at its refreshed `@` would produce: recorded install inputs
+ * equal the current ones and the installed tree is still on disk. Otherwise null.
+ */
+async function reusableDependencies(root, prepared) {
+  if (!prepared?.installInputs || (prepared.state !== "ready" && prepared.state !== "not_required")) return null;
+  if (prepared.state === "ready" && !existsSync(join(root, "node_modules"))) return null;
+  if (await installInputFingerprint(root) !== prepared.installInputs) return null;
+  return { state: prepared.state, packageManager: prepared.packageManager ?? null, installInputs: prepared.installInputs, reused: true };
+}
+
+/**
  * Exclusively assign a ready spare as workspace `name`, refreshed to the current
- * integration head. Returns null when no spare is ready; the caller then
- * provisions synchronously. Never falls back to the primary checkout.
+ * integration head. `dependencies` is the reusable readiness when the refresh
+ * left the install inputs unchanged, else null and the caller installs. Returns
+ * null when no spare is ready, including while one is being provisioned (which
+ * holds the pool for its whole install); the caller then provisions
+ * synchronously. Never falls back to the primary checkout.
  */
 export async function claimSpare(cwd, name) {
   const context = await workspaceContext(cwd);
   if (!context) return null;
-  return await withWorkspaceTransaction(`pool:${context.integration.root}`, async () => {
-    const [spare] = await readySpares(cwd);
-    if (!spare) return null;
-    const { name: assigned } = await renameWorkspace(spare.root, name);
-    await jj(spare.root, ["new", context.integrationBranch]);
-    const { spare: _released, prepared: _prepared, createdAt: _created, ...metadata } = (await workspaceMetadata(assigned)) ?? {};
-    await writeWorkspaceJson(metadataPath(assigned), { ...metadata, workspaceName: assigned, claimedAt: new Date().toISOString() });
-    return { root: spare.root, name: assigned };
-  });
+  return await withWorkspaceTransaction(`pool:${context.integration.root}`, () => claimReadySpare(cwd, context, name), { wait: false })
+    .catch((error) => { if (error?.code === "ELOCKED") return null; throw error; });
+}
+
+async function claimReadySpare(cwd, context, name) {
+  const [spare] = await readySpares(cwd);
+  if (!spare) return null;
+  const { name: assigned } = await renameWorkspace(spare.root, name);
+  await jj(spare.root, ["new", context.integrationBranch]);
+  const dependencies = await reusableDependencies(spare.root, spare.metadata?.preparedDependencies);
+  const { spare: _released, prepared: _prepared, preparedDependencies: _dependencies, createdAt: _created, ...metadata } =
+    (await workspaceMetadata(assigned)) ?? {};
+  await writeWorkspaceJson(metadataPath(assigned), { ...metadata, workspaceName: assigned, claimedAt: new Date().toISOString() });
+  return { root: spare.root, name: assigned, dependencies };
+}
+
+const REFILL_LOG_LIMIT = 1024 * 1024;
+// Evaluated by the refill child: this module's own `provisionSpare`, one JSON line per outcome.
+const REFILL_SCRIPT = `import(process.env.PEACH_REFILL_MODULE)
+  .then((m) => m.provisionSpare(process.env.PEACH_REFILL_ROOT))
+  .then((r) => console.log(new Date().toISOString(), JSON.stringify(r)),
+    (e) => { console.error(new Date().toISOString(), "refill failed:", e?.stack ?? e); process.exitCode = 1; });`;
+
+/**
+ * Refill the repository's spare pool without blocking the caller: a detached,
+ * `nice`d child runs `provisionSpare` for the integration root and appends its
+ * outcome to `~/.pi/agent/workspace-state/pool-refill.log`. Concurrent refills
+ * serialise on the pool transaction, and a ready spare makes one a no-op. While
+ * a refill is in flight, a claim finds no ready spare and installs a fresh
+ * workspace instead of waiting. `started` means the child process spawned; its
+ * outcome is only in the log. `command` replaces the spawned argv (tests).
+ */
+export async function startSpareRefill(cwd = process.cwd(), options = {}) {
+  const context = await workspaceContext(cwd);
+  if (!context) return { started: false, reason: "not-jj" };
+  const stateHome = join(homedir(), ".pi", "agent", "workspace-state");
+  await mkdir(stateHome, { recursive: true, mode: 0o700 });
+  const logPath = join(stateHome, "pool-refill.log");
+  let oversized = false;
+  try { oversized = statSync(logPath).size > REFILL_LOG_LIMIT; } catch { /* no log yet */ }
+  const log = openSync(logPath, oversized ? "w" : "a", 0o600);
+  try {
+    const [executable, ...args] = options.command ?? ["nice", "-n", "10", process.execPath, "-e", REFILL_SCRIPT];
+    const child = spawn(executable, args, {
+      cwd: context.integration.root,
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: { ...process.env, PEACH_REFILL_MODULE: import.meta.url, PEACH_REFILL_ROOT: context.integration.root },
+    });
+    const spawned = await new Promise((resolveSpawn) => {
+      child.once("spawn", () => resolveSpawn(null));
+      child.once("error", (error) => resolveSpawn(error));
+    });
+    if (spawned) return { started: false, reason: spawned.message, logPath };
+    child.unref();
+    return { started: true, pid: child.pid, logPath };
+  } finally {
+    closeSync(log);
+  }
 }
 
 const REPRODUCIBLE = new Set([
