@@ -1,4 +1,5 @@
-export const VERIFICATION_SLOT_ENV: "PEACH_VERIFICATION_SLOT";
+export const VERIFICATION_SLOT_ENV: "SLIPWAY_VERIFICATION_SLOT";
+export const LEGACY_VERIFICATION_SLOT_ENV: "PEACH_VERIFICATION_SLOT";
 export function verificationSlotEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export function withVerificationSlot<T>(
   operation: () => Promise<T>,

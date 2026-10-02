@@ -7,10 +7,11 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import {
-  parseExecutionPolicy, readExecutionPolicyAtCommit, readIntegrationPolicy, resolveIntegrationBranch,
+  parseExecutionPolicy, readExecutionPolicy, readExecutionPolicyAtCommit, readIntegrationPolicy, resolveIntegrationBranch,
 } from "../src/lib/execution-policy.mjs";
+import { readExactExecutionPolicy } from "../src/lib/post-integration-source.mjs";
 import { landWorkspace, workspaceContext } from "../src/lib/peach-workspace.mjs";
 
 // peach-pi's policy as extracted (pechhe/peach-pi 37a32367): its landing records
@@ -137,7 +138,9 @@ test("integration branches resolve declared, then origin/HEAD, then main, then m
   await assert.rejects(resolveIntegrationBranch({ declared: "a..b", exists: exists([]) }), /unsafe integrationBranch/);
 });
 
-async function gitRepository(branches: Record<string, string | null>, originHead: string) {
+type PolicyPath = "slipway.json" | ".peach/execution.json";
+
+async function gitRepository(branches: Record<string, string | null>, originHead: string, policyPaths: PolicyPath[] = [".peach/execution.json"]) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "peach-policy-")));
   const repo = join(root, "repo");
   const remote = join(root, "remote.git");
@@ -151,7 +154,11 @@ async function gitRepository(branches: Record<string, string | null>, originHead
   for (const [branch, declared] of Object.entries(branches)) {
     git(["checkout", "-q", "-B", branch]);
     await mkdir(join(repo, ".peach"), { recursive: true });
-    await writeFile(join(repo, ".peach", "execution.json"), policy(declared ? { integrationBranch: declared } : {}));
+    // With both names committed, the legacy file declares a decoy so precedence is observable.
+    for (const policyPath of policyPaths) {
+      const decoy = policyPaths.length > 1 && policyPath === ".peach/execution.json";
+      await writeFile(join(repo, policyPath), policy(decoy ? { integrationBranch: "legacy-decoy" } : declared ? { integrationBranch: declared } : {}));
+    }
     await writeFile(join(repo, `${branch}.txt`), branch);
     git(["add", "."]);
     git(["commit", "-qm", branch]);
@@ -213,3 +220,71 @@ test("landing verifies with the integration bookmark's policy and ignores an unc
     await f.dispose();
   }
 }, 120_000);
+
+/** Run `operation` capturing what it writes to stderr. */
+async function stderrOf<T>(operation: () => Promise<T>) {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; });
+  try {
+    return { value: await operation(), stderr: lines.join("") };
+  } finally {
+    spy.mockRestore();
+  }
+}
+const deprecation = /\.peach\/execution\.json is deprecated .* rename it to slipway\.json/;
+
+test("working files: slipway.json wins over the legacy path, and the legacy path alone still works with one warning", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "slipway-policy-files-")));
+  try {
+    const neither = await stderrOf(() => readExecutionPolicy(root));
+    assert.equal(neither.value, null);
+    assert.equal(neither.stderr, "");
+
+    await mkdir(join(root, ".peach"));
+    await writeFile(join(root, ".peach", "execution.json"), policy({ integrationBranch: "legacy" }));
+    const legacy = await stderrOf(async () => [await readExecutionPolicy(root), await readExecutionPolicy(root)]);
+    assert.deepEqual(legacy.value.map((parsed) => parsed?.integrationBranch), ["legacy", "legacy"]);
+    assert.match(legacy.stderr, deprecation);
+    assert.equal(legacy.stderr.trim().split("\n").length, 1, "one warning line per location and process");
+
+    await writeFile(join(root, "slipway.json"), policy({ integrationBranch: "neutral" }));
+    const both = await stderrOf(() => readExecutionPolicy(root));
+    assert.equal(both.value?.integrationBranch, "neutral");
+    assert.equal(both.stderr, "", "no warning once slipway.json governs");
+
+    // A failure names the file that was actually read.
+    await writeFile(join(root, "slipway.json"), "{");
+    await assert.rejects(readExecutionPolicy(root), /^Error: slipway\.json is not valid JSON/);
+    await rm(join(root, "slipway.json"));
+    await writeFile(join(root, ".peach", "execution.json"), "{");
+    await assert.rejects(stderrOf(() => readExecutionPolicy(root)), /^Error: \.peach\/execution\.json is not valid JSON/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const [label, policyPaths, warns] of [
+  ["slipway.json", ["slipway.json"], false],
+  ["the legacy path", [".peach/execution.json"], true],
+  ["both, preferring slipway.json", ["slipway.json", ".peach/execution.json"], false],
+] as const) {
+  test(`at-commit reads (jj and exact git object) find a policy committed as ${label}`, async () => {
+    const f = await gitRepository({ main: "main" }, "main", [...policyPaths]);
+    try {
+      const commit = jj(f.repo, ["log", "--no-graph", "-r", "main", "-T", "commit_id"]);
+      const read = await stderrOf(async () => ({
+        jj: await readExecutionPolicyAtCommit(f.repo, "main"),
+        integration: await readIntegrationPolicy(f.repo),
+        exact: await readExactExecutionPolicy(join(f.repo, ".git"), commit),
+      }));
+      assert.equal(read.value.jj.commitId, commit);
+      assert.equal(read.value.jj.policy?.integrationBranch, "main");
+      assert.equal(read.value.integration.integrationBranch, "main");
+      assert.equal(read.value.exact.configuration?.integrationBranch, "main");
+      if (warns) assert.match(read.stderr, deprecation);
+      else assert.doesNotMatch(read.stderr, /deprecated/);
+    } finally {
+      await f.dispose();
+    }
+  }, 60_000);
+}

@@ -27,10 +27,14 @@ export type IntegrationBranchProbes = {
   exists: (branch: string) => Promise<boolean>;
 };
 
-export const EXECUTION_POLICY_PATH: ".peach/execution.json";
+export const EXECUTION_POLICY_PATH: "slipway.json";
+export const LEGACY_EXECUTION_POLICY_PATH: ".peach/execution.json";
+export const EXECUTION_POLICY_PATHS: readonly ["slipway.json", ".peach/execution.json"];
+export function warnLegacyExecutionPolicy(location: string): void;
+export function selectExecutionPolicyPath(exists: (path: string) => Promise<boolean>, location: string): Promise<string | null>;
 export const SAFE_BRANCH: RegExp;
 export const UNDECLARED_POLICY: Readonly<Pick<ExecutionPolicy, "requiredLocalVerification" | "postLandVerification" | "remote" | "parallelExecution" | "migrationFinalization">>;
-export function parseExecutionPolicy(raw: string): ExecutionPolicy;
+export function parseExecutionPolicy(raw: string, path?: string): ExecutionPolicy;
 export function readExecutionPolicy(root: string): Promise<ExecutionPolicy | null>;
 export function readExecutionPolicyAtCommit(repo: string, revision: string): Promise<{ commitId: string; policy: ExecutionPolicy | null }>;
 export function generatedPathMatchers(declared: unknown): RegExp[];

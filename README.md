@@ -5,11 +5,34 @@ Harness-neutral JJ workspace and landing tool. One tagged artifact is both the
 
 slipway was extracted from `pechhe/peach-pi` at `37a32367` (the landing closure in
 `packages/pi-client/src/lib`, its CLI and its tests), with that history preserved.
-Until the later migration releases, it behaves exactly like the `peach-workspace`
-it came from. It uses the same state under `~/.pi` (`~/.pi/workspaces`,
-`~/.pi/agent/workspace-state`, `~/.pi/agent/workspace-mode.json`), the same
-`.peach/execution.json` repository policy, and the same `PEACH_*` environment
-contract for verification commands.
+Until the later migration releases, it behaves like the `peach-workspace` it came
+from and uses the same state under `~/.pi` (`~/.pi/workspaces`,
+`~/.pi/agent/workspace-state`, `~/.pi/agent/workspace-mode.json`). Since v0.2.0 it
+also reads the neutral repository config and sets the neutral environment names
+described below, alongside the old ones. See [CHANGELOG.md](CHANGELOG.md).
+
+## Repository config
+
+A repository's landing policy is `slipway.json` at its root. If it is absent,
+slipway reads the legacy `.peach/execution.json` (same schema) and prints a
+one-line deprecation warning to stderr naming `slipway.json`. When both exist,
+`slipway.json` wins. This holds for every reader: the working-file policy, the
+landing guard, and the policy read from an exact commit during landing and
+finalization. A later release refuses the legacy path.
+
+## Environment contract
+
+Verification commands receive both name sets until a later release removes the
+`PEACH_*` names:
+
+| slipway name | Legacy name | Set for |
+| --- | --- | --- |
+| `SLIPWAY_POST_LAND_BASE`, `SLIPWAY_POST_LAND_COMMIT` | `PEACH_POST_LAND_BASE`, `PEACH_POST_LAND_COMMIT` | Post-land verification commands. |
+| `SLIPWAY_VERIFICATION_SLOT` | `PEACH_VERIFICATION_SLOT` | Commands running inside the held verification slot. Either name set to `held` lets a nested landing pass through. |
+| `SLIPWAY_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | `PEACH_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | Post-integration finalization commands and target probes. A policy's `environmentKeys` may not start with either prefix. |
+
+slipway reads `SLIPWAY_COMMAND_TIMEOUT_MS` (the per-command timeout for jj, git
+and gh), falling back to `PEACH_WORKSPACE_COMMAND_TIMEOUT_MS`.
 
 ## Install
 
@@ -17,19 +40,11 @@ Releases are git tags. Nothing is published to npm. The unscoped `slipway` name
 there belongs to an unrelated package.
 
 ```sh
-bun add -g github:pechhe/slipway#v0.1.0
+bun add -g github:pechhe/slipway#v0.2.0
 slipway status
 ```
 
-The repository is private. Bun 1.4 downloads a `github:` dependency as an
-unauthenticated `api.github.com` tarball, so it gets a 404 for a private repository
-and ignores `GITHUB_TOKEN`. To authenticate it, put the token in the API base URL
-for that one command (nothing is persisted in `bun.lock`):
-
-```sh
-GITHUB_API_URL="https://x-access-token:$(gh auth token)@api.github.com" \
-  bun add -g github:pechhe/slipway#v0.1.0
-```
+The repository is public, so the `github:` tag form needs no authentication.
 
 `slipway` is installed beside `peach-workspace` and leaves `~/.pi/agent/bin` and
 `~/.pi/agent/lib` alone.
@@ -74,7 +89,10 @@ with no cycles. A host that brokers child processes injects its broker with
 ## Development and landing
 
 slipway lands its own changes through `slipway land` (or the installed
-`peach-workspace land`) from an isolated JJ workspace, under `.peach/execution.json`.
+`peach-workspace land`) from an isolated JJ workspace, under its own
+`.peach/execution.json`. That file keeps the legacy name until the installed
+landing tools all read `slipway.json`, because a v0.1.0 or `peach-workspace`
+landing reads only the legacy path.
 
 - **Per landing**, the fast static gate runs: `bun install --frozen-lockfile`,
   `bun run check` (Oxlint and the closure boundary) and `bun run typecheck`. No

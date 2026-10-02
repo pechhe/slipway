@@ -1,5 +1,6 @@
 /**
- * The one reader of a repository's `.peach/execution.json`: strict parsing, reading
+ * The one reader of a repository's policy, `slipway.json` at its root (or, until a
+ * later release removes it, the legacy `.peach/execution.json`): strict parsing, reading
  * from a checkout or an exact revision, and integration-branch resolution
  * (declared → origin/HEAD → main → master). Landing reads the policy committed on
  * the integration bookmark, never the primary checkout's working files.
@@ -11,7 +12,11 @@ import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
 
-export const EXECUTION_POLICY_PATH = ".peach/execution.json";
+export const EXECUTION_POLICY_PATH = "slipway.json";
+/** Still read, with a deprecation warning, when `slipway.json` is absent. A later release removes it. */
+export const LEGACY_EXECUTION_POLICY_PATH = ".peach/execution.json";
+/** Candidate policy paths in precedence order: `slipway.json` wins when both exist. */
+export const EXECUTION_POLICY_PATHS = Object.freeze([EXECUTION_POLICY_PATH, LEGACY_EXECUTION_POLICY_PATH]);
 const POLICY_BYTES = 64 * 1024;
 const MAX_CHECKS = 20;
 const MAX_ARGS = 100;
@@ -23,7 +28,35 @@ const EXECUTABLE = /^[A-Za-z0-9._+-]+$/;
 const FORBIDDEN_GATE_EXECUTABLES = new Set(["bash", "sh", "zsh", "fish", "pwsh", "powershell", "git", "jj"]);
 const FALLBACK_BRANCHES = ["main", "master"];
 
-const fail = (message) => { throw new Error(`${EXECUTION_POLICY_PATH} ${message}`); };
+// Parsing is synchronous, so the file being parsed can name itself in every failure.
+let policyLabel = EXECUTION_POLICY_PATH;
+const fail = (message) => { throw new Error(`${policyLabel} ${message}`); };
+
+const warnedLegacy = new Set();
+/**
+ * One stderr line, once per process and repository, when a repository is governed
+ * by the legacy policy path. Never stdout: commands print JSON there. `location` is
+ * a checkout or its `.git` directory; both name the same repository.
+ */
+export function warnLegacyExecutionPolicy(location) {
+  const key = String(location).replace(/\/\.git\/?$/, "");
+  if (warnedLegacy.has(key)) return;
+  warnedLegacy.add(key);
+  process.stderr.write(`slipway: ${LEGACY_EXECUTION_POLICY_PATH} is deprecated and will stop working in a later release; rename it to ${EXECUTION_POLICY_PATH} at the repository root (${key})\n`);
+}
+
+/**
+ * The policy path that governs, given a probe of which paths exist: `slipway.json`
+ * first, else the legacy path (warned about), else null.
+ */
+export async function selectExecutionPolicyPath(exists, location) {
+  for (const candidate of EXECUTION_POLICY_PATHS) {
+    if (!await exists(candidate)) continue;
+    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(location);
+    return candidate;
+  }
+  return null;
+}
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 /** A repository-relative directory that stays inside the checkout (lexically; runners re-check the real path). */
@@ -115,7 +148,13 @@ export function generatedPathMatchers(declared) {
  * other declaration (`postIntegration`, `generatedPaths`, `sourcePublication`,
  * `requiredChecks`, …) is kept as declared, after validation where Peach owns it.
  */
-export function parseExecutionPolicy(raw) {
+export function parseExecutionPolicy(raw, path = EXECUTION_POLICY_PATH) {
+  const previous = policyLabel;
+  policyLabel = path;
+  try { return parsePolicyText(raw); } finally { policyLabel = previous; }
+}
+
+function parsePolicyText(raw) {
   if (typeof raw !== "string") fail("must be text");
   if (Buffer.byteLength(raw, "utf8") > POLICY_BYTES) fail("exceeds the 64 KiB policy budget");
   let parsed;
@@ -142,10 +181,14 @@ export const UNDECLARED_POLICY = Object.freeze({ requiredLocalVerification: [], 
 
 /** The policy in a checkout's working files, or null when it declares none. */
 export async function readExecutionPolicy(root) {
-  let raw;
-  try { raw = await readFile(join(root, EXECUTION_POLICY_PATH), "utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-  return parseExecutionPolicy(raw);
+  for (const candidate of EXECUTION_POLICY_PATHS) {
+    let raw;
+    try { raw = await readFile(join(root, candidate), "utf8"); }
+    catch (error) { if (error?.code === "ENOENT") continue; throw error; }
+    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(root);
+    return parseExecutionPolicy(raw, candidate);
+  }
+  return null;
 }
 
 const jjRead = (repo, args) => runWorkspaceCommand("jj", ["--color=never", "--ignore-working-copy", ...args], { cwd: repo });
@@ -164,12 +207,16 @@ async function commitOf(repo, revision) {
 export async function readExecutionPolicyAtCommit(repo, revision) {
   const commitId = await commitOf(repo, revision);
   if (!commitId) throw new Error(`Revision '${revision}' does not exist`);
-  const shown = await jjRead(repo, ["file", "show", "-r", commitId, `root-file:${symbol(EXECUTION_POLICY_PATH)}`]);
-  if (shown.code !== 0) {
-    if (/No such path/i.test(shown.stderr)) return { commitId, policy: null };
-    throw new Error(`Could not read ${EXECUTION_POLICY_PATH} at ${commitId}: ${shown.stderr.trim()}`);
+  for (const candidate of EXECUTION_POLICY_PATHS) {
+    const shown = await jjRead(repo, ["file", "show", "-r", commitId, `root-file:${symbol(candidate)}`]);
+    if (shown.code !== 0) {
+      if (/No such path/i.test(shown.stderr)) continue;
+      throw new Error(`Could not read ${candidate} at ${commitId}: ${shown.stderr.trim()}`);
+    }
+    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(repo);
+    return { commitId, policy: parseExecutionPolicy(shown.stdout, candidate) };
   }
-  return { commitId, policy: parseExecutionPolicy(shown.stdout) };
+  return { commitId, policy: null };
 }
 
 /**

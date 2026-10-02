@@ -1,21 +1,28 @@
 /**
- * A Claude Code PreToolUse guard: in a repository governed by `.peach/execution.json`,
+ * A Claude Code PreToolUse guard: in a repository governed by `slipway.json` (or the
+ * legacy `.peach/execution.json`),
  * the integration branch moves and is published only through `peach-workspace land`.
  * Pushing feature bookmarks for a pull request stays allowed.
  */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { parseExecutionPolicy } from "./execution-policy.mjs";
+import { EXECUTION_POLICY_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
 const LAND = "Use `peach-workspace land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
 
-/** Nearest `.peach/execution.json` above `cwd`, with its integration branches; null when ungoverned. */
+/** Nearest policy above `cwd` (`slipway.json` before the legacy path), with its integration branches; null when ungoverned. */
 export async function governedBranches(cwd) {
   for (let dir = cwd; ; dir = dirname(dir)) {
-    const raw = await readFile(join(dir, ".peach", "execution.json"), "utf8").catch(() => null);
-    if (raw !== null) {
+    const texts = new Map();
+    for (const candidate of EXECUTION_POLICY_PATHS) {
+      const text = await readFile(join(dir, candidate), "utf8").catch(() => null);
+      if (text !== null) texts.set(candidate, text);
+    }
+    const found = await selectExecutionPolicyPath(async (candidate) => texts.has(candidate), dir);
+    if (found !== null) {
+      const raw = texts.get(found);
       let declared;
-      try { declared = parseExecutionPolicy(raw).integrationBranch; } catch {
+      try { declared = parseExecutionPolicy(raw, found).integrationBranch; } catch {
         // An invalid policy still governs: keep guarding whatever branch it names.
         try { declared = JSON.parse(raw)?.integrationBranch; } catch { /* unreadable */ }
       }

@@ -2,7 +2,7 @@ import { access, copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
-import { parseExecutionPolicy } from "./execution-policy.mjs";
+import { EXECUTION_POLICY_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 import { postIntegrationPolicy } from "./post-integration-policy.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 export async function finalizationGit(gitDirectory, args, environment = sanitizedProcessEnv) {
@@ -88,10 +88,12 @@ export async function readExactExecutionPolicy(selectedGitDirectory, commit, env
   const resolved = (await finalizationGit(gitDirectory, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`], environment)
     .catch(async () => { throw await missingCommit(gitDirectory, commit, "the object is not in its store"); })).trim();
   if (resolved !== commit) throw new Error("Commit identity changed");
-  const listed = (await finalizationGit(gitDirectory, ["ls-tree", "--name-only", commit, "--", ".peach/execution.json"], environment)).trim();
-  if (!listed) return { gitDirectory, configuration: null };
+  const listed = new Set((await finalizationGit(gitDirectory, ["ls-tree", "--name-only", commit, "--", ...EXECUTION_POLICY_PATHS], environment))
+    .split("\n").map((line) => line.trim()).filter(Boolean));
+  const policyPath = await selectExecutionPolicyPath(async (candidate) => listed.has(candidate), gitDirectory);
+  if (!policyPath) return { gitDirectory, configuration: null };
   // The same strict rules as landing, applied to the exact integrated object.
-  const configuration = parseExecutionPolicy(await finalizationGit(gitDirectory, ["show", `${commit}:.peach/execution.json`], environment));
+  const configuration = parseExecutionPolicy(await finalizationGit(gitDirectory, ["show", `${commit}:${policyPath}`], environment), policyPath);
   return { gitDirectory, configuration };
 }
 

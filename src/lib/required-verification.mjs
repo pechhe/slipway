@@ -69,7 +69,7 @@ export async function runRequiredVerification(input) {
   const environment = verificationSlotEnvironment(base);
   return await withVerificationSlot(async () => {
     const outcomes = await runVerificationStages(checks, async (declared, index) => {
-      if (!declared || typeof declared !== "object") throw new Error(".peach/execution.json contains malformed requiredLocalVerification");
+      if (!declared || typeof declared !== "object") throw new Error("The repository policy contains malformed requiredLocalVerification");
       const check = normalizeVerificationDeclaration(declared, "requiredLocalVerification");
       const args = check.args.map(String);
       const command = [check.executable, ...args].join(" ");

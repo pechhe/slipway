@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "vite-plus/test";
 import {
+  LEGACY_VERIFICATION_SLOT_ENV,
   VERIFICATION_SLOT_ENV,
   verificationSlotEnvironment,
   withVerificationSlot,
@@ -32,7 +33,7 @@ async function withSlotFixture(
   }) => Promise<void>,
 ) {
   const root = await mkdtemp(path.join(tmpdir(), `verification-slot-${name}-`));
-  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined };
+  const env = { ...process.env, [VERIFICATION_SLOT_ENV]: undefined, [LEGACY_VERIFICATION_SLOT_ENV]: undefined };
   const landings: Promise<unknown>[] = [];
   const holds: Array<() => void> = [];
   try {
@@ -102,6 +103,21 @@ test("a landing started inside a held slot does not wait for its parent", () =>
       { root, env, pollMs: 10 },
     );
     assert.equal(nested, "nested ran");
+  }));
+
+test("verification commands see the held slot under both env names, and either name alone passes through", () =>
+  withSlotFixture("names", async ({ root, env, track, hold }) => {
+    const held = verificationSlotEnvironment(env);
+    assert.equal(held.SLIPWAY_VERIFICATION_SLOT, "held");
+    assert.equal(held.PEACH_VERIFICATION_SLOT, "held");
+    const holderHeld = hold();
+    const holding = signal();
+    track(withVerificationSlot(async () => { holding.resolve(); await holderHeld.promise; }, { root, env, pollMs: 10 }));
+    await holding.promise;
+    // The slot is held by another landing, so only the env pass-through lets these run.
+    for (const name of ["SLIPWAY_VERIFICATION_SLOT", "PEACH_VERIFICATION_SLOT"]) {
+      assert.equal(await withVerificationSlot(async () => name, { root, env: { ...env, [name]: "held" }, pollMs: 10 }), name);
+    }
   }));
 
 test("a waiting landing reports how many landings are ahead and who holds the slot", () =>

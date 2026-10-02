@@ -121,7 +121,8 @@ async function reportFailure(record, env, issueOptions = {}, save = async () => 
 
 async function runChecks(record, update, baseEnv) {
   await withFinalizationSource(record.gitDirectory, record.commit, async (root) => {
-    const env = { ...baseEnv, PEACH_POST_LAND_BASE: record.base, PEACH_POST_LAND_COMMIT: record.commit };
+    const env = { ...baseEnv, SLIPWAY_POST_LAND_BASE: record.base, SLIPWAY_POST_LAND_COMMIT: record.commit,
+      PEACH_POST_LAND_BASE: record.base, PEACH_POST_LAND_COMMIT: record.commit };
     // The log, not this process's output: an in-process run shares its host's.
     await appendFile(record.log, "[post-land] installing dependencies\n");
     await prepareWorkspaceDependencies(root, { quiet: true, env });

@@ -6,7 +6,7 @@ export function declaredPublicationRemote(policy) {
   const value = policy?.remote ?? policy?.sourcePublication?.remote;
   if (value === undefined) return null;
   if (typeof value !== "string" || !REMOTE.test(value)) {
-    throw new Error("Invalid publication remote in .peach/execution.json: expected one named remote");
+    throw new Error("Invalid publication remote in the repository policy: expected one named remote");
   }
   return value;
 }

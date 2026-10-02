@@ -19,10 +19,11 @@ export const recordCheckout = (verified: string) => `require("node:fs").appendFi
 
 /**
  * `shallow` makes the colocated primary `.git` a depth-1 clone of `origin` (as
- * YardSmith's is); `postIntegration` declares that external-state step.
+ * YardSmith's is); `postIntegration` declares that external-state step; `policyPath`
+ * is where the policy is committed (the legacy `.peach/execution.json` by default).
  */
 export async function project(options: { ignore?: string; generatedPaths?: unknown; verify?: (verified: string) => string;
-  shallow?: boolean; postIntegration?: Record<string, unknown> } = {}) {
+  shallow?: boolean; postIntegration?: Record<string, unknown>; policyPath?: "slipway.json" | ".peach/execution.json" } = {}) {
   process.env.JJ_USER ??= "Fixture";
   process.env.JJ_EMAIL ??= "fixture@example.com";
   const root = await realpath(await mkdtemp(join(tmpdir(), "peach-rollover-")));
@@ -39,7 +40,7 @@ export async function project(options: { ignore?: string; generatedPaths?: unkno
   if (options.shallow) git(["commit", "-q", "--allow-empty", "-m", "Before the shallow boundary"]);
   await writeFile(join(repo, "README.md"), "fixture\n");
   if (options.ignore) await writeFile(join(repo, ".gitignore"), options.ignore);
-  await writeFile(join(repo, ".peach", "execution.json"), JSON.stringify({
+  await writeFile(join(repo, options.policyPath ?? join(".peach", "execution.json")), JSON.stringify({
     version: 1, integrationBranch: "main",
     sourcePublication: { version: 1, mode: "required", remote: "origin" },
     requiredLocalVerification: [{ executable: "node", args: ["-e", options.verify?.(verified) ?? recordCheckout(verified)] }],

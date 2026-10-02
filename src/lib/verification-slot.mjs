@@ -8,12 +8,16 @@ import { stateHome } from "./workspace-paths.mjs";
 
 /** Set on verification commands so a landing started inside one (a test
  * fixture, a nested tool) never waits for the slot its parent holds. */
-export const VERIFICATION_SLOT_ENV = "PEACH_VERIFICATION_SLOT";
+export const VERIFICATION_SLOT_ENV = "SLIPWAY_VERIFICATION_SLOT";
+/** Set alongside the slipway name until a later release removes it. */
+export const LEGACY_VERIFICATION_SLOT_ENV = "PEACH_VERIFICATION_SLOT";
 
 /** Environment for a command running inside the held slot. */
 export function verificationSlotEnvironment(environment = process.env) {
-  return { ...environment, [VERIFICATION_SLOT_ENV]: "held" };
+  return { ...environment, [VERIFICATION_SLOT_ENV]: "held", [LEGACY_VERIFICATION_SLOT_ENV]: "held" };
 }
+
+const slotHeldBy = (environment) => environment[VERIFICATION_SLOT_ENV] === "held" || environment[LEGACY_VERIFICATION_SLOT_ENV] === "held";
 
 // Marks the async flow that holds the slot, so a landing can hold it across
 // rebase, verification and integration while its inner verification call
@@ -66,7 +70,7 @@ async function slotQueueStatus(target, waitingDir, own) {
  */
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
-  if (environment[VERIFICATION_SLOT_ENV] === "held" || heldSlot.getStore()) return await operation();
+  if (slotHeldBy(environment) || heldSlot.getStore()) return await operation();
   const root = options.root ?? stateHome();
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = join(root, slotName(options.scope));

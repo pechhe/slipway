@@ -17,7 +17,10 @@ function finalization(ledger: string, failFirst = false) {
   const marker = `${ledger}.failed-once`;
   const source = `const fs=require("node:fs");
 if (${failFirst} && !fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, ""); process.exit(9); }
-fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: process.env.PEACH_FINALIZATION_COMMIT, landed: fs.existsSync("landed.txt") }) + "\\n");`;
+const e = process.env;
+const both = (name) => e["SLIPWAY_FINALIZATION_" + name] === e["PEACH_FINALIZATION_" + name] ? e["SLIPWAY_FINALIZATION_" + name] : "mismatch";
+if (!both("KEY") || both("TARGET") !== "fixture-development-db") process.exit(8);
+fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: both("COMMIT"), landed: fs.existsSync("landed.txt") }) + "\\n");`;
   return {
     version: 1, target: "fixture-development-db", idempotency: "artifact-key", approvalMode: "automatic-development", timeoutMs: 30_000,
     command: { executable: "node", args: ["-e", source] },
@@ -28,11 +31,11 @@ fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: process.en
 const primaryRef = (f: Fixture) => execFileSync("git", ["--git-dir", join(f.repo, ".git"), "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
 const ledgerEntries = async (ledger: string) => (await readFile(ledger, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 
-async function shallowProject(failFirst = false) {
+async function shallowProject(failFirst = false, policyPath?: "slipway.json") {
   // Outside the project, so the policy can name it before the project exists.
   const external = await mkdtemp(join(tmpdir(), "peach-finalization-target-"));
   const ledger = join(external, "ledger.jsonl");
-  const created = await project({ shallow: true, postIntegration: finalization(ledger, failFirst) });
+  const created = await project({ shallow: true, postIntegration: finalization(ledger, failFirst), policyPath });
   const f = { ...created, dispose: async () => { await Promise.all([created.dispose(), rm(external, { recursive: true, force: true })]); } };
   await access(join(f.repo, ".git", "shallow"));
   await writeFile(join(f.repo, "local.txt"), "unlanded\n");
@@ -81,3 +84,17 @@ test("rerunning an integrated but unpublished landing finalizes and publishes wi
     await f.dispose();
   }
 }, 240_000);
+
+test("a policy committed as slipway.json governs landing and finalization at the exact commit", async () => {
+  const { f, ledger, workspace } = await shallowProject(false, "slipway.json");
+  try {
+    const result = await land(workspace.workspacePath);
+    assert.equal(result.ok, true, JSON.stringify({ postIntegration: result.postIntegration, publication: result.publication }));
+    assert.equal(result.postIntegration.status, "complete");
+    assert.equal(result.publication.status, "pushed");
+    assert.deepEqual(await ledgerEntries(ledger), [{ commit: result.artifact.commitId, landed: true }]);
+    assert.match(f.remoteFile("slipway.json"), /fixture-development-db/);
+  } finally {
+    await f.dispose();
+  }
+}, 180_000);

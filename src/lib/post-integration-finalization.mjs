@@ -157,7 +157,10 @@ export async function finalizePostIntegration(input) {
           if (process.env[key] !== undefined)
             environment[key] = process.env[key];
         }
-        Object.assign(environment, { PEACH_FINALIZATION_COMMIT: commit, PEACH_FINALIZATION_KEY: identity, PEACH_FINALIZATION_TARGET: policy.target });
+        Object.assign(environment, {
+          SLIPWAY_FINALIZATION_COMMIT: commit, SLIPWAY_FINALIZATION_KEY: identity, SLIPWAY_FINALIZATION_TARGET: policy.target,
+          PEACH_FINALIZATION_COMMIT: commit, PEACH_FINALIZATION_KEY: identity, PEACH_FINALIZATION_TARGET: policy.target,
+        });
         reason = "External target could not be verified";
         const probe = await runBoundedProcess({
           executable: policy.targetProbe.executable,

@@ -163,7 +163,7 @@ export async function retainedWorkspaceMaterial(root, integrationRoot, limit = 5
 export function describeRetention(result) {
   if (result?.reason !== "unique-files") return String(result?.reason ?? "cleanup did not complete");
   return `holds files cleanup will not delete: ${(result.paths ?? []).join(", ")}`
-    + " (remove them, or declare generated output in .peach/execution.json generatedPaths)";
+    + " (remove them, or declare generated output in slipway.json generatedPaths)";
 }
 
 /** Cleanup judges files on disk, so it reads the primary checkout's working policy (strictly). */

@@ -23,7 +23,8 @@ const jj = (cwd: string, args: string[]) =>
 const CHECK = [
   "const fs = require('node:fs');",
   "const value = fs.readFileSync('value.txt', 'utf8');",
-  "fs.writeFileSync(process.env.EVIDENCE, JSON.stringify({ value, base: process.env.PEACH_POST_LAND_BASE, commit: process.env.PEACH_POST_LAND_COMMIT }));",
+"const both = (name) => process.env['SLIPWAY_POST_LAND_' + name] === process.env['PEACH_POST_LAND_' + name] ? process.env['SLIPWAY_POST_LAND_' + name] : 'mismatch';",
+  "fs.writeFileSync(process.env.EVIDENCE, JSON.stringify({ value, base: both('BASE'), commit: both('COMMIT') }));",
   "process.exit(value === 'broken' ? 3 : 0);",
 ].join("\n");
 

@@ -52,6 +52,25 @@ test("ordinary work and feature-branch publication are allowed", () => {
   ]) assert.equal(landingBypass(line, branches), null, line);
 });
 
+test("slipway.json governs the guard and wins over the legacy path in the same directory", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "slipway-landing-guard-"));
+  try {
+    const neutral = path.join(root, "neutral");
+    const both = path.join(root, "both");
+    await mkdir(path.join(both, ".peach"), { recursive: true });
+    await mkdir(neutral, { recursive: true });
+    await writeFile(path.join(neutral, "slipway.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
+    await writeFile(path.join(both, "slipway.json"), JSON.stringify({ version: 1, integrationBranch: "trunk" }));
+    await writeFile(path.join(both, ".peach", "execution.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
+    const push = (cwd: string, branch: string) => landingGuardDecision({ tool_name: "Bash", cwd, tool_input: { command: `jj git push -b ${branch}` } });
+    assert.equal((await push(neutral, "develop"))?.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal((await push(both, "trunk"))?.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(await push(both, "develop"), null, "the legacy file is ignored once slipway.json exists");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the hook decision applies only to Bash in a governed repository", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "peach-landing-guard-"));
   try {
