@@ -35,7 +35,13 @@ export async function migrationCandidate(cwd, context, io, options = {}) {
         await run(policy.verify);
         const finalized = await io.revisionFacts(cwd, candidate.changeId);
         const resultPaths = changedPaths(await io.jj(cwd, ["diff", "--from", base.commitId, "--to", finalized.commitId, "--summary"]));
-        if (!resultPaths.some(file => matches(policy.artifactPaths, file))) throw new Error("Migration generator produced no declared artifacts");
+        if (!resultPaths.some(file => matches(policy.artifactPaths, file))) {
+          // A trigger path changed without a schema change (for example a table moved
+          // between modules): generation and verification passed and wrote nothing.
+          if (finalized.commitId !== candidate.commitId) throw new Error("Migration generator changed source without producing declared artifacts");
+          generated.finalized = finalized;
+          return finalized;
+        }
         const unexpected = resultPaths.filter(file => !semanticPaths.includes(file) && !matches(policy.artifactPaths, file));
         if (unexpected.length) throw new Error("Migration generation changed undeclared paths: " + unexpected.join(", "));
         generated.finalized = finalized;
