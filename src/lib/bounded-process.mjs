@@ -49,12 +49,24 @@ export function redactAndBoundProcessOutput(output, maxBytes, redact = (value) =
     stderrTruncated: output.stderrTruncated || Buffer.byteLength(stderr, "utf8") < stderrBytes
   };
 }
+
+let processBroker;
+
+/**
+ * Route every bounded process through a host broker (the Peach desktop's
+ * long-lived Bun broker) instead of spawning here; `undefined` restores local
+ * spawning. The broker receives a serialisable request and the abort signal.
+ */
+export function setProcessBroker(broker) {
+  processBroker = broker;
+}
+
 export function runBoundedProcess(request) {
   const maxOutputBytes = Math.max(0, Math.floor(request.maxOutputBytes));
   const maxOutputBytesPerStream = Math.max(0, Math.floor(request.maxOutputBytesPerStream ?? maxOutputBytes));
   const maxStoredOutputBytes = Math.max(0, Math.floor(request.maxStoredOutputBytes ?? maxOutputBytes));
   const env = request.env ?? sanitizedProcessEnv();
-  const broker = globalThis.__peachRunBoundedProcess;
+  const broker = processBroker;
   if (broker) {
     const brokerEnv = Object.fromEntries(Object.entries(env).filter((entry) => entry[1] !== undefined));
     return broker({

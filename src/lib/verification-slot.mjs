@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
+import { stateHome } from "./workspace-paths.mjs";
 
 /** Set on verification commands so a landing started inside one (a test
  * fixture, a nested tool) never waits for the slot its parent holds. */
@@ -67,7 +67,7 @@ async function slotQueueStatus(target, waitingDir, own) {
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
   if (environment[VERIFICATION_SLOT_ENV] === "held" || heldSlot.getStore()) return await operation();
-  const root = options.root ?? join(homedir(), ".pi", "agent", "workspace-state");
+  const root = options.root ?? stateHome();
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = join(root, slotName(options.scope));
   const waitingDir = `${target}.waiting`;

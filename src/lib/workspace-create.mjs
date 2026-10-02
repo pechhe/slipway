@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
+import { parseWorkspaceList, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext, workspaceSlug } from "./workspace-jj.mjs";
+import { workspaceHome } from "./workspace-paths.mjs";
 import {
   assertIssueAvailable,
   assertWorkspaceMutationAllowed,
@@ -9,17 +11,9 @@ import {
   landingStatePaths,
   listWorkspaces,
   metadataPath,
-  parseWorkspaceList,
-  prepareWorkspaceDependencies,
   readLandingState,
-  revisionExists,
-  revisionFacts,
-  run,
-  taskWorkspaceName,
-  workspaceContext,
   workspaceMetadata,
-  workspaceSlug,
-} from "./peach-workspace.mjs";
+} from "./workspace-state.mjs";
 import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
 import { claimSpare, forgetWorkspace } from "./workspace-lifecycle.mjs";
 import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
@@ -31,7 +25,6 @@ import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
  * readiness, ownership event and guarded forget through `hooks`; the defaults
  * use plain JJ and package-manager installation.
  */
-const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
 const WORKSPACE_LIST_TEMPLATE = 'name ++ "\\t" ++ root ++ "\\t" ++ target.change_id() ++ "\\t" ++ target.commit_id() ++ "\\n"';
 
 const exists = (path) => existsSync(path);
@@ -110,10 +103,10 @@ async function forgetSafeMissingIssueWorkspace(cwd, workspace, issueNumber, hook
   }
   const recordedPath = typeof workspace.metadata?.workspacePath === "string"
     ? workspace.metadata.workspacePath
-    : workspace.root || join(WORKSPACE_HOME, workspace.name);
+    : workspace.root || join(workspaceHome(), workspace.name);
   // The checkout is gone, so storage containment is checked lexically, not through realpath.
   const normalizedPath = resolve(recordedPath);
-  if (!normalizedPath.startsWith(`${resolve(WORKSPACE_HOME)}${sep}`)) {
+  if (!normalizedPath.startsWith(`${resolve(workspaceHome())}${sep}`)) {
     throw new Error(`${label} has an unsafe stale path; preserve it for explicit recovery`);
   }
   await forgetWorkspace(context.integration.root, workspace.name, normalizedPath, hooks);
@@ -249,7 +242,7 @@ export async function recoverIssueWorkspace(cwd, options, hooks = {}) {
     throw new Error(`Issue #${issueNumber} explicit recovery conflicts with existing workspace Issue metadata`);
   }
   await assertIssueAvailable(cwd, issueNumber, workspaceName);
-  const workspacePath = join(WORKSPACE_HOME, workspaceName);
+  const workspacePath = join(workspaceHome(), workspaceName);
   const recovered = await recoverExistingIssueWorkspace(cwd, workspacePath, workspaceName, issueNumber, {
     ...(options.changeId ? { changeId: options.changeId } : {}), ...(options.commitId ? { commitId: options.commitId } : {}),
   });
@@ -305,11 +298,11 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   let name = taskWorkspaceName(workspaceSlug(basename(context.integration.root), 24), issueNumber);
   await assertIssueAvailable(cwd, issueNumber, name);
   // A surviving Issue checkout at its deterministic path is recovered, never replaced by a spare.
-  const survivor = Boolean(issueNumber) && exists(join(WORKSPACE_HOME, name));
+  const survivor = Boolean(issueNumber) && exists(join(workspaceHome(), name));
   const spare = survivor ? null : await claimSpare(cwd, name);
   if (spare) name = spare.name;
-  const workspacePath = spare?.root ?? join(WORKSPACE_HOME, name);
-  await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
+  const workspacePath = spare?.root ?? join(workspaceHome(), name);
+  await mkdir(workspaceHome(), { recursive: true, mode: 0o700 });
   if (survivor) {
     const recovered = await recoverExistingIssueWorkspace(cwd, workspacePath, name, issueNumber);
     return assigned(hooks, recovered, task, { issueNumber, created: false, reused: true, workspacePath });

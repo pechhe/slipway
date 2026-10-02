@@ -35,4 +35,15 @@ export type BoundedProcessResult = BoundedProcessOutput & {
 
 export function sanitizedProcessEnv(source?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export function redactAndBoundProcessOutput(output: BoundedProcessOutput, maxBytes: number, redact?: (value: string) => string): BoundedProcessOutput;
+/** A serialisable bounded-process request as a host broker receives it. */
+export type ProcessBrokerRequest = Omit<BoundedProcessRequest, "args" | "env" | "input" | "fullStdoutHashPrefix" | "redactOutput" | "abortSignal" | "maxStoredOutputBytes"> & {
+  args: string[];
+  env: Record<string, string>;
+  maxOutputBytesPerStream: number;
+  inputBase64?: string;
+  fullStdoutHashPrefixBase64?: string;
+};
+export type ProcessBroker = (request: ProcessBrokerRequest, signal?: AbortSignal) => Promise<Omit<BoundedProcessResult, "outputSha256" | "cancelled"> & { cancelled?: boolean }>;
+/** Route bounded processes through a host broker; `undefined` restores local spawning. */
+export function setProcessBroker(broker: ProcessBroker | undefined): void;
 export function runBoundedProcess(request: BoundedProcessRequest): Promise<BoundedProcessResult>;

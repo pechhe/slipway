@@ -7,17 +7,13 @@
  * direct write is admitted, or refuses while a live direct writer holds it. */
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { lockHome } from "./workspace-paths.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 function processAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
   catch (error) { return error?.code === "EPERM"; }
-}
-
-function lockHome() {
-  return join(homedir(), ".pi", "agent", "workspace-state", "locks");
 }
 
 async function canonical(root) {

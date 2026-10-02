@@ -1,4 +1,5 @@
-import type { LandingAdapter, LandingRevision, WorkspaceContext } from "./peach-workspace.mjs";
+import type { LandingAdapter, LandingRevision } from "./landing-steps.mjs";
+import type { WorkspaceContext } from "./workspace-jj.mjs";
 import type { VerificationEvidence } from "./verification-policy.mjs";
 
 export type CandidateContext = {

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { landedHome, stateHome } from "./workspace-paths.mjs";
 /** Retirement policy shared by Peach and vanilla Pi. There is no archive period:
  * a delivered checkout is eligible at landing, once callers prove identity,
  * ancestry, publication and exclusive access. */
@@ -55,8 +55,7 @@ export function workspaceContinuationDisposition(state, evidence) {
 
 export async function assertWorkspaceNotRetired(workspaceName) {
   if (workspaceName === "default") return;
-  const root = join(homedir(), ".pi", "agent", "workspace-state");
-  for (const file of [join(root, workspaceName + ".json"), join(root, "landed", workspaceName + ".json")]) {
+  for (const file of [join(stateHome(), workspaceName + ".json"), join(landedHome(), workspaceName + ".json")]) {
     let state;
     try { state = JSON.parse(await readFile(file, "utf8")); }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }

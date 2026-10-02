@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { landedHome } from "./workspace-paths.mjs";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 
-const artifactDirectory = join(homedir(), ".pi", "agent", "workspace-state", "landed");
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Retain proven landing evidence independently of the disposable working directory. */
 export async function archiveIntegratedWorkspaceEvidence(gitDirectory, state) {
+  const artifactDirectory = landedHome();
   const file = join(artifactDirectory, "artifact-" + digest([await realpath(gitDirectory), state.artifactCommitId]) + ".json");
   await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
   try {

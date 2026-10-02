@@ -2,12 +2,12 @@ import { Effect } from "effect";
 import lockfile from "proper-lockfile";
 import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { exactPostIntegrationApproval, postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
+import { postIntegrationHome } from "./workspace-paths.mjs";
 import { SourcePreparationFailure, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
 import { HistoricalMigrationFailure, artifactKey, coveredByCompletedAncestor, historicalMigrationTip, isAncestor, readState, receiptPath,
   targetKeyOf, verifyHistoricalMigrationSpan, writeTargetOutcome } from "./post-integration-coverage.mjs";
@@ -89,7 +89,7 @@ export async function finalizePostIntegration(input) {
   if (!policy) return { ok: true, sourceIntegrated: true, status: "not_declared", integratedCommitSha: commit };
   const policyDigest = postIntegrationPolicyDigest(policy);
   const identity = artifactKey(gitDirectory, commit, policyDigest, policy.target);
-  const stateDirectory = input.stateDirectory ?? path.join(homedir(), ".pi", "agent", "workspace-state", "post-integration");
+  const stateDirectory = input.stateDirectory ?? postIntegrationHome();
   const statePath = receiptPath(stateDirectory, gitDirectory, commit);
   await mkdir(stateDirectory, { recursive: true, mode: 448 });
   const targetKey = targetKeyOf(gitDirectory, policy.target);

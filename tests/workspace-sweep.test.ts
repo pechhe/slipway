@@ -6,7 +6,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vite-plus/test";
-import { attachWorkspaceIssue, createWorkspace, landWorkspace, lockPath, provisionSpare, pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "../src/lib/peach-workspace.mjs";
+import { attachWorkspaceIssue, createWorkspace, landWorkspace, provisionSpare, pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "../src/lib/peach-workspace.mjs";
+import { lockPath } from "../src/lib/workspace-state.mjs";
 import { EMPTY_IDLE_MS } from "../src/lib/workspace-sweep.mjs";
 
 const cli = fileURLToPath(new URL("../src/launcher/workspace.mjs", import.meta.url));

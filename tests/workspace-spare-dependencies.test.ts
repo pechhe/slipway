@@ -5,7 +5,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "vite-plus/test";
-import { createWorkspace, metadataPath, provisionSpare, readySpares, startSpareRefill, workspaceMetadata } from "../src/lib/peach-workspace.mjs";
+import { createWorkspace, provisionSpare, readySpares, startSpareRefill } from "../src/lib/peach-workspace.mjs";
+import { metadataPath, workspaceMetadata } from "../src/lib/workspace-state.mjs";
 import { installInputFingerprint } from "../src/lib/install-inputs.mjs";
 import { withWorkspaceTransaction } from "../src/lib/workspace-transaction.mjs";
 

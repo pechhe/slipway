@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile, rename, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
+import { transactionHome } from "./workspace-paths.mjs";
 
 // Only short native identity/owner transitions are serialized here. Never use
 // this repository key around model work, verification or a connector request.
 // With `wait: false` a held transaction fails at once with code ELOCKED.
 export async function withWorkspaceTransaction(key, operation, options = {}) {
-  const root = join(homedir(), ".pi", "agent", "workspace-state", "transactions");
+  const root = transactionHome();
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = join(root, createHash("sha256").update(key).digest("hex"));
   const release = await lockfile.lock(target, {

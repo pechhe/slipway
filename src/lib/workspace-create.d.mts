@@ -1,4 +1,4 @@
-import type { WorkspaceContext, WorkspaceEntry } from "./peach-workspace.mjs";
+import type { WorkspaceContext, WorkspaceEntry } from "./workspace-jj.mjs";
 
 /** Host seams for assigning a workspace; each defaults to plain JJ or package-manager installation. */
 export interface WorkspaceCreationHooks<Readiness = unknown> {

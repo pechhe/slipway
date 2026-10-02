@@ -7,7 +7,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vite-plus/test";
-import { cleanupLandedWorkspace, createWorkspace, findIssueWorkspace, landWorkspace, renameWorkspace, statePath, workspaceMetadata } from "../src/lib/peach-workspace.mjs";
+import { cleanupLandedWorkspace, createWorkspace, findIssueWorkspace, landWorkspace, renameWorkspace } from "../src/lib/peach-workspace.mjs";
+import { statePath, workspaceMetadata } from "../src/lib/workspace-state.mjs";
 import { withinWorkspaceStorage } from "../src/lib/workspace-lifecycle.mjs";
 
 const landedPath = (name: string) => join(homedir(), ".pi", "agent", "workspace-state", "landed", `${name}.json`);

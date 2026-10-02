@@ -1,4 +1,4 @@
-import type { WorkspaceEntry } from "./peach-workspace.mjs";
+import type { WorkspaceEntry } from "./workspace-jj.mjs";
 export function readySpares(cwd: string): Promise<WorkspaceEntry[]>;
 export function provisionSpare(cwd?: string): Promise<{ provisioned: boolean; reason?: string; workspacePath?: string }>;
 /** A claimed spare's provisioned dependencies, reused because its install inputs are unchanged. */

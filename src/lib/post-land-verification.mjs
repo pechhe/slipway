@@ -7,19 +7,20 @@
  */
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { runBoundedProcess } from "./bounded-process.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
 import { withFinalizationSource } from "./post-integration-source.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
 import { linkPostLandIssue, openPostLandIssue, pendingIssueRetry } from "./post-land-issue.mjs";
+import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
+import { postLandHome } from "./workspace-paths.mjs";
 
 const RETAINED_RECORDS = 30;
 const CHECK_TIMEOUT_MS = 45 * 60_000;
 const FAILURE_TAIL_LINES = 60;
 
-export const postLandRoot = () => path.join(homedir(), ".pi", "agent", "workspace-state", "post-land");
+export const postLandRoot = postLandHome;
 const recordFile = (commit) => path.join(postLandRoot(), `${commit}.json`);
 
 /**
@@ -119,8 +120,6 @@ async function reportFailure(record, env, issueOptions = {}, save = async () => 
 }
 
 async function runChecks(record, update, baseEnv) {
-  // Imported here: the landing module imports this one to start runs.
-  const { prepareWorkspaceDependencies } = await import("./peach-workspace.mjs");
   await withFinalizationSource(record.gitDirectory, record.commit, async (root) => {
     const env = { ...baseEnv, PEACH_POST_LAND_BASE: record.base, PEACH_POST_LAND_COMMIT: record.commit };
     // The log, not this process's output: an in-process run shares its host's.

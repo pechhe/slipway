@@ -2,24 +2,13 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { mkdir, readdir, realpath, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import {
-  artifactPublished,
-  finishLandedWorkspace,
-  landingStatePaths,
-  listWorkspaces,
-  lockPath,
-  metadataPath,
-  prepareWorkspaceDependencies,
-  readLandingState,
-  renameWorkspace,
-  revisionExists,
-  run,
-  workspaceContext,
-  workspaceHasUnintegratedWork,
-  workspaceMetadata,
-} from "./peach-workspace.mjs";
+import { fileURLToPath } from "node:url";
+import { artifactPublished, finishLandedWorkspace } from "./landing-steps.mjs";
+import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
+import { revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
+import { metadataHome, poolRefillLogPath, stateHome, workspaceHome } from "./workspace-paths.mjs";
+import { landingStatePaths, listWorkspaces, lockPath, metadataPath, readLandingState, renameWorkspace, workspaceMetadata } from "./workspace-state.mjs";
 import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
 import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
@@ -33,8 +22,6 @@ import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transa
  * head and reconciles dependencies there. A spare holds no work, so it is freely
  * replaceable; only spares are ever created or claimed here.
  */
-const WORKSPACE_HOME = join(homedir(), ".pi", "workspaces");
-
 function projectSlug(root) {
   return basename(root).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "project";
 }
@@ -59,11 +46,11 @@ export async function provisionSpare(cwd = process.cwd()) {
     const spare = (await listWorkspaces(cwd)).find((workspace) => workspace.metadata?.spare === true);
     if (spare?.metadata?.prepared === true) return { provisioned: false, reason: "spare-exists" };
     const name = spare?.name ?? `${projectSlug(context.integration.root)}-spare-${randomUUID().slice(0, 6)}`;
-    const workspacePath = spare?.root ?? join(WORKSPACE_HOME, name);
+    const workspacePath = spare?.root ?? join(workspaceHome(), name);
     if (!spare) {
-      await mkdir(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
+      await mkdir(workspaceHome(), { recursive: true, mode: 0o700 });
       await jj(context.integration.root, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
-      await mkdir(join(homedir(), ".pi", "agent", "workspace-state", "workspaces"), { recursive: true, mode: 0o700 });
+      await mkdir(metadataHome(), { recursive: true, mode: 0o700 });
       await writeWorkspaceJson(metadataPath(name), {
         version: 1, workspaceName: name, workspacePath, integrationRoot: context.integration.root,
         spare: true, prepared: false, createdAt: new Date().toISOString(),
@@ -118,37 +105,32 @@ async function claimReadySpare(cwd, context, name) {
 }
 
 const REFILL_LOG_LIMIT = 1024 * 1024;
-// Evaluated by the refill child: this module's own `provisionSpare`, one JSON line per outcome.
-const REFILL_SCRIPT = `import(process.env.PEACH_REFILL_MODULE)
-  .then((m) => m.provisionSpare(process.env.PEACH_REFILL_ROOT))
-  .then((r) => console.log(new Date().toISOString(), JSON.stringify(r)),
-    (e) => { console.error(new Date().toISOString(), "refill failed:", e?.stack ?? e); process.exitCode = 1; });`;
 
 /**
  * Refill the repository's spare pool without blocking the caller: a detached,
- * `nice`d child runs `provisionSpare` for the integration root and appends its
- * outcome to `~/.pi/agent/workspace-state/pool-refill.log`. Concurrent refills
+ * `nice`d child runs the closure's own refill entry (`spare-refill.mjs`, beside
+ * this module in source and in the installed bundle) for the integration root,
+ * appending its outcome to the pool-refill log in the state home. Concurrent refills
  * serialise on the pool transaction, and a ready spare makes one a no-op. While
  * a refill is in flight, a claim finds no ready spare and installs a fresh
  * workspace instead of waiting. `started` means the child process spawned; its
- * outcome is only in the log. `command` replaces the spawned argv (tests).
+ * outcome is only in the log. `command` replaces the spawned runner (tests); the
+ * integration root is always its last argument.
  */
 export async function startSpareRefill(cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) return { started: false, reason: "not-jj" };
-  const stateHome = join(homedir(), ".pi", "agent", "workspace-state");
-  await mkdir(stateHome, { recursive: true, mode: 0o700 });
-  const logPath = join(stateHome, "pool-refill.log");
+  await mkdir(stateHome(), { recursive: true, mode: 0o700 });
+  const logPath = poolRefillLogPath();
   let oversized = false;
   try { oversized = statSync(logPath).size > REFILL_LOG_LIMIT; } catch { /* no log yet */ }
   const log = openSync(logPath, oversized ? "w" : "a", 0o600);
   try {
-    const [executable, ...args] = options.command ?? ["nice", "-n", "10", process.execPath, "-e", REFILL_SCRIPT];
-    const child = spawn(executable, args, {
+    const [executable, ...args] = options.command ?? ["nice", "-n", "10", process.execPath, fileURLToPath(new URL("./spare-refill.mjs", import.meta.url))];
+    const child = spawn(executable, [...args, context.integration.root], {
       cwd: context.integration.root,
       detached: true,
       stdio: ["ignore", log, log],
-      env: { ...process.env, PEACH_REFILL_MODULE: import.meta.url, PEACH_REFILL_ROOT: context.integration.root },
     });
     const spawned = await new Promise((resolveSpawn) => {
       child.once("spawn", () => resolveSpawn(null));
@@ -292,7 +274,7 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
 /** Whether a checkout lives beneath Peach workspace storage, the only place cleanup deletes. */
 export async function withinWorkspaceStorage(root) {
   const [storage, target] = await Promise.all([
-    realpath(WORKSPACE_HOME).catch(() => resolve(WORKSPACE_HOME)),
+    realpath(workspaceHome()).catch(() => resolve(workspaceHome())),
     realpath(root).catch(() => resolve(root)),
   ]);
   return target.startsWith(storage + "/");
