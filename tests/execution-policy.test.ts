@@ -13,7 +13,25 @@ import {
 } from "../src/lib/execution-policy.mjs";
 import { landWorkspace, workspaceContext } from "../src/lib/peach-workspace.mjs";
 
-const peachPolicy = readFileSync(fileURLToPath(new URL("../../../.peach/execution.json", import.meta.url)), "utf8");
+// peach-pi's policy as extracted (pechhe/peach-pi 37a32367): its landing records
+// carry this declaration's digest, so the parser must keep reproducing it.
+const peachPolicy = JSON.stringify({
+  version: 1,
+  integrationBranch: "master",
+  remote: "origin",
+  requiredLocalVerification: [
+    { executable: "bun", args: ["install", "--frozen-lockfile"] },
+    { executable: "bun", args: ["dedupe", "--check"], concurrent: true },
+    { executable: "bun", args: ["run", "check"], concurrent: true },
+    { executable: "bun", args: ["run", "check:architecture"], concurrent: true },
+    { executable: "bun", args: ["run", "typecheck"], concurrent: true },
+    { executable: "bun", args: ["run", "test:landing"], concurrent: true },
+  ],
+  generatedPaths: ["apps/desktop/deno/generated", "**/.build"],
+  unattendedMergeToIntegration: true,
+  parallelExecution: true,
+});
+const slipwayPolicy = readFileSync(fileURLToPath(new URL("../.peach/execution.json", import.meta.url)), "utf8");
 // The shape of YardSmith's policy: a develop integration branch, the older
 // sourcePublication remote, `cwd: null`, migrations and a development database step.
 const yardsmithPolicy = {
@@ -44,7 +62,7 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 const policy = (overrides: Record<string, unknown>) => JSON.stringify({ version: 1, ...overrides });
 const check = (executable: string, extra: Record<string, unknown> = {}) => ({ executable, args: ["run", "test"], ...extra });
 
-test("Peach's own policy parses with its landing shape and verification digest unchanged", () => {
+test("peach-pi's policy parses with its landing shape and verification digest unchanged", () => {
   const parsed = parseExecutionPolicy(peachPolicy);
   assert.equal(parsed.integrationBranch, "master");
   assert.equal(parsed.remote, "origin");
@@ -55,6 +73,16 @@ test("Peach's own policy parses with its landing shape and verification digest u
   assert.deepEqual(parsed.requiredLocalVerification[1], { executable: "bun", args: ["dedupe", "--check"], concurrent: true });
   // The digest landing records for this declaration before the shared parser existed.
   assert.equal(digest(parsed.requiredLocalVerification), "25effc2d61517a47e37578dae699fe59599f9b43732013020df26aab978316b8");
+});
+
+test("slipway's own policy gates a landing on fast static checks only", () => {
+  const parsed = parseExecutionPolicy(slipwayPolicy);
+  assert.equal(parsed.integrationBranch, "main");
+  assert.equal(parsed.remote, "origin");
+  // The complete suite runs at release (`bun run verify:release`), never per landing.
+  assert.deepEqual(parsed.requiredLocalVerification.map((step: { args: string[] }) => step.args.join(" ")),
+    ["install --frozen-lockfile", "run check", "run typecheck"]);
+  assert.deepEqual(parsed.postLandVerification, []);
 });
 
 test("a YardSmith-shaped policy keeps every declaration it makes", () => {

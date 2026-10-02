@@ -1,0 +1,47 @@
+{
+  "name": "@pechhe/slipway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Harness-neutral JJ workspace and landing tool: one CLI (slipway) and one library.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "repository": "github:pechhe/slipway",
+  "bin": {
+    "slipway": "src/launcher/workspace.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/lib/peach-workspace.d.mts",
+      "default": "./src/lib/peach-workspace.mjs"
+    },
+    "./delivery": {
+      "types": "./src/lib/peach-workspace.d.mts",
+      "default": "./src/lib/peach-workspace.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "vp lint --quiet && node scripts/check-architecture.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test && bun run test:runtimes",
+    "test:runtimes": "node --test scripts/check-architecture.test.mjs && bun test scripts/with-hermetic-home.test.mjs",
+    "verify:release": "node scripts/verify-release.mjs"
+  },
+  "dependencies": {
+    "effect": "4.0.0",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0",
+    "vite-plus": "1.0.0"
+  },
+  "packageManager": "bun@1.4.2"
+}

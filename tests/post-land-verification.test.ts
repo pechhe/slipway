@@ -6,7 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Schedule } from "effect";
 import { test } from "vite-plus/test";
-import { assertHermeticHome } from "../../../scripts/hermetic-home-guard.mjs";
+import { assertHermeticHome } from "../scripts/hermetic-home-guard.mjs";
 import { landWorkspace } from "../src/lib/peach-workspace.mjs";
 import { githubRepository, MAX_ISSUE_ATTEMPTS, originatingIssue, pendingIssueRetry, postLandIssueBody, postLandIssueTitle } from "../src/lib/post-land-issue.mjs";
 import { describePostLandFailure, latestPostLandResult, postLandRoot, retryPostLandIssues, runPostLandVerification, startPostLandVerification, type PostLandRecord } from "../src/lib/post-land-verification.mjs";
