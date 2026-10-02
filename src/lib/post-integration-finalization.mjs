@@ -1,70 +1,17 @@
 import { Effect } from "effect";
 import lockfile from "proper-lockfile";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { exactPostIntegrationApproval, postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
-import { readExactExecutionPolicy, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+import { readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+import { HistoricalMigrationFailure, artifactKey, coveredByCompletedAncestor, historicalMigrationTip, isAncestor, readState, receiptPath,
+  targetKeyOf, verifyHistoricalMigrationSpan, writeTargetOutcome } from "./post-integration-coverage.mjs";
 
-class HistoricalMigrationFailure extends Error {}
-
-async function isAncestor(gitDirectory, ancestorCommit, descendantCommit, environmentFactory, abortSignal) {
-  const result = await runBoundedProcess({
-    executable: "git", args: ["--git-dir", gitDirectory, "merge-base", "--is-ancestor", ancestorCommit, descendantCommit],
-    cwd: gitDirectory, env: environmentFactory(), abortSignal, timeoutMs: 30000, maxOutputBytes: 1024,
-  });
-  return result.exitCode === 0 && !result.timedOut && !result.error && !result.signal
-    && !result.stdoutTruncated && !result.stderrTruncated;
-}
-
-async function verifyHistoricalMigrationSpan(input, gitDirectory, commit, tip, policyDigest, environmentFactory, abortSignal) {
-  if (!input.recoverDescendant || !/^[a-f0-9]{40}$/.test(tip))
-    throw new HistoricalMigrationFailure("Integration tip changed before finalization");
-  if (!await isAncestor(gitDirectory, commit, tip, environmentFactory, abortSignal))
-    throw new HistoricalMigrationFailure("Historical artifact is no longer in integration history");
-  const [exact, live] = await Promise.all([
-    readExactExecutionPolicy(gitDirectory, commit, environmentFactory),
-    readExactExecutionPolicy(gitDirectory, tip, environmentFactory),
-  ]);
-  const migration = exact.configuration?.migrationFinalization;
-  if (migration?.mode !== "late_bound_serialized"
-    || JSON.stringify(migration) !== JSON.stringify(live.configuration?.migrationFinalization)
-    || postIntegrationPolicyDigest((await readPostIntegrationPolicy(gitDirectory, tip, environmentFactory)).policy) !== policyDigest)
-    throw new HistoricalMigrationFailure("Historical migration policy changed or is not recoverable");
-  if (!Array.isArray(migration.triggerPaths) || !Array.isArray(migration.artifactPaths))
-    throw new HistoricalMigrationFailure("Historical migration input paths are missing");
-  const commandInputs = [exact.configuration.postIntegration.command, exact.configuration.postIntegration.targetProbe]
-    .flatMap((command) => {
-      const cwd = command.cwd ?? ".";
-      return [path.posix.join(cwd, "package.json"), ...command.args
-        .filter((arg) => /\.(?:[cm]?js|ts)$/.test(arg) && !arg.startsWith("-"))
-        .map((arg) => path.posix.dirname(path.posix.join(cwd, arg)))];
-    });
-  const protectedPaths = [...new Set([
-    ".peach/execution.json",
-    ...migration.triggerPaths, ...migration.artifactPaths,
-    ...commandInputs,
-  ])];
-  if (protectedPaths.some((value) => typeof value !== "string" || !value || path.isAbsolute(value)
-    || value.startsWith(":") || value.includes("\\") || value.split("/").includes("..")))
-    throw new HistoricalMigrationFailure("Historical migration input paths are unsafe");
-  const unchanged = await runBoundedProcess({
-    executable: "git", args: ["--git-dir", gitDirectory, "diff", "--quiet", commit, tip, "--", ...protectedPaths],
-    cwd: gitDirectory, env: environmentFactory(), abortSignal, timeoutMs: 30000, maxOutputBytes: 1024,
-  });
-  if (unchanged.exitCode !== 0 || unchanged.timedOut || unchanged.error || unchanged.signal || unchanged.stdoutTruncated || unchanged.stderrTruncated)
-    throw new HistoricalMigrationFailure("Historical migration inputs changed after integration");
-}
-
-async function historicalMigrationTip(input, gitDirectory, commit, policyDigest, environmentFactory, abortSignal) {
-  const tip = (await input.readIntegrationTip()).trim();
-  if (tip === commit) return;
-  await verifyHistoricalMigrationSpan(input, gitDirectory, commit, tip, policyDigest, environmentFactory, abortSignal);
-}
 // A separate external-target lease, not a long-held workspace identity transaction.
 function withTargetLease(directory, identity, operation) {
   const abort = new AbortController();
@@ -102,20 +49,6 @@ function completedLegacyReceipt(previous, gitDirectory, commit, policy) {
   return previous.policyDigest === digest && previous.idempotencyKey === key;
 }
 
-async function readState(file) {
-  try {
-    const value = JSON.parse(await readFile(file, "utf8"));
-    if (!value || typeof value !== "object" || !["approval_required", "running", "failed", "complete", "covered"].includes(value.status) || value.sourceIntegrated !== true || !Number.isInteger(value.attempt) || value.attempt < 0 || value.ok !== (["complete", "covered"].includes(value.status))
-      || value.status === "covered" && (value.coverage !== "descendant" || !/^[a-f0-9]{40}$/.test(value.coveredByCommitSha ?? "")))
-      throw new Error("Invalid post-integration state");
-    return value;
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw error;
-  }
-}
-
 async function coveredByCompletedDescendant(input, gitDirectory, commit, policy, policyDigest, stateDirectory, environmentFactory, abortSignal) {
   if (!input.recoverDescendant) return null;
   // A completed later artifact proves this target only when its migration inputs
@@ -125,7 +58,8 @@ async function coveredByCompletedDescendant(input, gitDirectory, commit, policy,
     || !await isAncestor(gitDirectory, commit, tip, environmentFactory, abortSignal)) return null;
   for (const entry of await readdir(stateDirectory, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const receipt = await readState(path.join(stateDirectory, entry.name));
+    // A receipt this build cannot validate (e.g. a newer format) only cannot cover.
+    const receipt = await readState(path.join(stateDirectory, entry.name)).catch(() => null);
     const descendant = receipt?.integratedCommitSha;
     if (receipt?.status !== "complete" || receipt.approved !== true || receipt.attempt < 1
       || receipt.target !== policy.target || !/^[a-f0-9]{40}$/.test(descendant ?? "")
@@ -133,7 +67,7 @@ async function coveredByCompletedDescendant(input, gitDirectory, commit, policy,
     const candidate = await readPostIntegrationPolicy(gitDirectory, descendant, environmentFactory);
     if (!candidate.policy || postIntegrationPolicyDigest(candidate.policy) !== policyDigest
       || !(receipt.policyDigest === policyDigest
-        && receipt.idempotencyKey === createHash("sha256").update(JSON.stringify([gitDirectory, descendant, policyDigest, policy.target])).digest("hex")
+        && receipt.idempotencyKey === artifactKey(gitDirectory, descendant, policyDigest, policy.target)
         || completedLegacyReceipt(receipt, gitDirectory, descendant, candidate.policy))) continue;
     try {
       await verifyHistoricalMigrationSpan(input, gitDirectory, commit, descendant, policyDigest, environmentFactory, abortSignal);
@@ -154,12 +88,11 @@ export async function finalizePostIntegration(input) {
   const { gitDirectory, policy } = await readPostIntegrationPolicy(input.gitDirectory, commit, environmentFactory);
   if (!policy) return { ok: true, sourceIntegrated: true, status: "not_declared", integratedCommitSha: commit };
   const policyDigest = postIntegrationPolicyDigest(policy);
-  const identity = createHash("sha256").update(JSON.stringify([gitDirectory, commit, policyDigest, policy.target])).digest("hex");
-  const stateKey = createHash("sha256").update(JSON.stringify([gitDirectory, commit])).digest("hex");
+  const identity = artifactKey(gitDirectory, commit, policyDigest, policy.target);
   const stateDirectory = input.stateDirectory ?? path.join(homedir(), ".pi", "agent", "workspace-state", "post-integration");
-  const statePath = path.join(stateDirectory, `${stateKey}.json`);
+  const statePath = receiptPath(stateDirectory, gitDirectory, commit);
   await mkdir(stateDirectory, { recursive: true, mode: 448 });
-  const targetKey = createHash("sha256").update(JSON.stringify([gitDirectory, policy.target])).digest("hex");
+  const targetKey = targetKeyOf(gitDirectory, policy.target);
   return withTargetLease(stateDirectory, targetKey, async (leaseSignal) => {
     const abortSignal = input.abortSignal ? AbortSignal.any([input.abortSignal, leaseSignal]) : leaseSignal;
     const previous = await readState(statePath);
@@ -190,16 +123,29 @@ export async function finalizePostIntegration(input) {
       approved: true,
       authorization: policyApproved ? "repository-policy" : previous?.authorization ?? "human"
     };
-    const coverage = await coveredByCompletedDescendant(input, gitDirectory, commit, policy, policyDigest,
+    // The target's latest outcome: only a successful run here records `complete`.
+    const outcome = { gitDirectory, target: policy.target, policyDigest, commitSha: commit };
+    const coverByDescendant = await coveredByCompletedDescendant(input, gitDirectory, commit, policy, policyDigest,
       stateDirectory, environmentFactory, abortSignal);
+    const coverByAncestor = coverByDescendant ? null : await coveredByCompletedAncestor(input,
+      { gitDirectory, commit, policy, policyDigest, stateDirectory, targetKey }, environmentFactory, abortSignal);
+    const coverage = coverByDescendant ?? coverByAncestor;
     if (coverage) {
-      const covered = { ...accepted, ok: true, status: "covered", coverage: "descendant", ...coverage,
+      // A lost target lease means another process may own the target: record nothing.
+      if (abortSignal.aborted) throw new Error("External target lease lost before coverage was recorded; rerun land");
+      const covered = { ...accepted, ok: true, status: "covered", coverage: coverByDescendant ? "descendant" : "ancestor", ...coverage,
         attempt: previous?.attempt ?? 0,
         ...(previous?.status === "failed" ? { priorFailure: { attempt: previous.attempt, reason: previous.reason } } : {}) };
       await writeWorkspaceJson(statePath, covered);
+      // Ancestor coverage re-asserts its completed anchor. Descendant coverage
+      // leaves the record alone: a later failure must stay the latest outcome.
+      if (coverByAncestor) await writeTargetOutcome(stateDirectory, targetKey, { ...outcome, status: "complete", anchorCommitSha: coverage.coveredByCommitSha });
       return covered;
     }
     const attempt = (previous?.attempt ?? 0) + 1;
+    // Invalidate the target's coverage before any external work, so an
+    // interrupted run can never be skipped over.
+    await writeTargetOutcome(stateDirectory, targetKey, { ...outcome, status: "running" });
     await writeWorkspaceJson(statePath, { ...accepted, ok: false, status: "running", attempt });
     let reason = "Integration tip changed before finalization";
     try {
@@ -248,10 +194,12 @@ export async function finalizePostIntegration(input) {
       if (abortSignal.aborted) throw new Error(reason);
       reason = "External finalization succeeded but its local receipt could not be persisted; retry with the same key";
       await writeWorkspaceJson(statePath, complete);
+      await writeTargetOutcome(stateDirectory, targetKey, { ...outcome, status: "complete", anchorCommitSha: commit });
       return complete;
     } catch (error) {
       if (error instanceof HistoricalMigrationFailure) reason = error.message;
       const failed = { ...accepted, ok: false, status: "failed", attempt, reason };
+      await writeTargetOutcome(stateDirectory, targetKey, { ...outcome, status: "failed" });
       await writeWorkspaceJson(statePath, failed);
       return failed;
     }

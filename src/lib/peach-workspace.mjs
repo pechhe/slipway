@@ -680,6 +680,8 @@ async function startPostLand(cwd, context, result, runner, environment) {
  * integration; rerunning land retries it without re-verifying landed source.
  */
 export async function completeLanding(cwd, context, commitId, options = {}) {
+  // Wall-clock stage starts for the CLI's timing line; not landing evidence.
+  const timings = { finalizingStartedAt: Date.now() };
   const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
   const postIntegration = await finalizePostIntegration({
     gitDirectory, integratedCommitSha: commitId, approval: options.postIntegrationApproval,
@@ -689,15 +691,16 @@ export async function completeLanding(cwd, context, commitId, options = {}) {
     readIntegrationTip: async () => (await revisionFacts(cwd, context.integrationBranch)).commitId,
     ...(options.environment ? { environment: options.environment } : {}),
   });
+  timings.publishingStartedAt = Date.now();
   if (!postIntegration.ok) {
-    return { ok: false, postIntegration, publication: { ok: false, status: "blocked", commitId,
+    return { ok: false, postIntegration, timings: { ...timings, finishedAt: timings.publishingStartedAt }, publication: { ok: false, status: "blocked", commitId,
       reason: `Post-integration ${postIntegration.status}${postIntegration.reason ? `: ${postIntegration.reason}` : ""}. The local integration is kept; resolve it and rerun land.` } };
   }
   const remote = publicationRemote(context, options.localOnly);
   const publication = remote
     ? await publishIntegration(cwd, remote, context.integrationBranch, commitId)
     : { ok: true, status: options.localOnly === true ? "local_only" : "not_declared", commitId };
-  return { ok: publication.ok, postIntegration, publication };
+  return { ok: publication.ok, postIntegration, publication, timings: { ...timings, finishedAt: Date.now() } };
 }
 
 /** True when the landed artifact is on the declared remote, or when no publication applies. */

@@ -20,6 +20,7 @@ import {
   runPostLandVerification,
 } from "../lib/peach-workspace.mjs";
 import { landingGuardDecision } from "../lib/landing-guard.mjs";
+import { landingTimingLine } from "../lib/landing-timing.mjs";
 import { execFileSync } from "node:child_process";
 import { setPriority } from "node:os";
 
@@ -89,12 +90,16 @@ try {
   } else if (command === "land") {
     if (rest.some((flag) => flag !== "--local-only" && flag !== "--direct")) throw new Error("Usage: peach-workspace land [--local-only] [--direct]");
     // --direct lands the primary checkout itself, for a session explicitly working Direct.
+    const timing = { startedAt: Date.now(), stages: [] };
     const result = await landWorkspace(process.cwd(), {
+      onStage: (stage) => timing.stages.push([stage, Date.now()]),
       localOnly: rest.includes("--local-only") ? true : undefined,
       allowDefaultWorkspace: rest.includes("--direct"),
       // This CLI, bundled or not, is its own background verification runner.
       postLandRunner: [process.execPath, process.argv[1], "post-land-run"],
     });
+    // stderr, so stdout stays the JSON result.
+    console.error(landingTimingLine({ ...timing, finishedAt: Date.now() }, result));
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
       ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));

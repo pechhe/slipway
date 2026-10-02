@@ -9,7 +9,7 @@ export type PostIntegrationResult = {
   attempt?: number;
   approved?: true;
   authorization?: "human" | "repository-policy";
-  coverage?: "descendant";
+  coverage?: "descendant" | "ancestor";
   coveredByCommitSha?: string;
   coveredByPolicyDigest?: string;
   priorFailure?: { attempt: number; reason: string };

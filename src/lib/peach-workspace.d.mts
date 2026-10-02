@@ -69,6 +69,8 @@ export type LandingTail = {
   ok: boolean;
   postIntegration: import("./post-integration-finalization.mjs").PostIntegrationResult;
   publication: LandingPublication;
+  /** Wall-clock (epoch ms) starts of post-integration finalization and publication, for timing output only. */
+  timings?: { finalizingStartedAt: number; publishingStartedAt: number; finishedAt: number };
 };
 /** True when the landed artifact is on the declared remote, or no publication applies. */
 export function artifactPublished(cwd: string, context: { integrationBranch: string; configuration: { remote?: string | null } }, state: { artifactCommitId: string; localOnly?: boolean }): Promise<boolean>;
