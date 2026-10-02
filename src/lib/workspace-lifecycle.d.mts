@@ -23,7 +23,9 @@ export interface RetirementHooks {
   onReleased?: (release: { workspaceName: string; projectRoot: string; issueNumber: number | null }) => void;
   environment?: () => NodeJS.ProcessEnv;
 }
-export function cleanupLandedWorkspace(cwd?: string, hooks?: RetirementHooks): Promise<{ cleaned: boolean; reason?: string; paths?: string[] }>;
+export function cleanupLandedWorkspace(cwd?: string, hooks?: RetirementHooks): Promise<{ cleaned: boolean; reason?: string; paths?: string[];
+  /** A failed post-integration record a later published landing superseded. */
+  supersededPostIntegration?: { status: string; attempt: number; reason?: string } }>;
 export function withinWorkspaceStorage(root: string): Promise<boolean>;
 export function forgetWorkspace(integrationRoot: string, workspaceName: string, workspacePath: string, hooks?: Pick<RetirementHooks, "forget">): Promise<void>;
 export function retireWorkspace(integrationRoot: string, workspace: { name: string; root: string }, hooks?: RetirementHooks): Promise<void>;

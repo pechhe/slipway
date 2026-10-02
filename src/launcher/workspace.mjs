@@ -220,6 +220,8 @@ try {
     if (rest.length > 1 || rest[0]?.startsWith("-")) throw new Error("Usage: peach-workspace cleanup [path]");
     const result = await cleanupLandedWorkspace(rest[0] ? resolve(rest[0]) : process.cwd());
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${describeRetention(result)}.`);
+    const superseded = result.supersededPostIntegration;
+    if (superseded) console.log(`Superseded post-integration record (${superseded.status}, attempt ${superseded.attempt}${superseded.reason ? `: ${superseded.reason}` : ""}): a later landing published this artifact.`);
   } else if (command === "remove") {
     if (rest.length !== 1 || rest[0].startsWith("-")) throw new Error("Usage: peach-workspace remove <path>");
     process.exitCode = await removeWorkspaceAt(resolve(rest[0]));

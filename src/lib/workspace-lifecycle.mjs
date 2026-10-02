@@ -4,7 +4,7 @@ import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { artifactPublished, finishLandedWorkspace } from "./landing-steps.mjs";
+import { artifactPublished, finishLandedWorkspace, publicationRemote } from "./landing-steps.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
 import { metadataHome, poolRefillLogPath, stateHome, workspaceHome } from "./workspace-paths.mjs";
@@ -233,13 +233,20 @@ async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   const external = await finalizePostIntegration({ gitDirectory, integratedCommitSha: state.artifactCommitId, inspectOnly: true,
     readIntegrationTip: () => jj(context.integration.root, ["--ignore-working-copy", "log", "--no-graph", "-r", state.integrationBranch, "-T", "commit_id"]),
     ...(hooks.environment ? { environment: hooks.environment } : {}) });
-  if (!external.ok) return { cleaned: false, reason: `post-integration-${external.status}` };
-  if (!await artifactPublished(cwd, context, state)) return { cleaned: false, reason: "not-published" };
+  const published = await artifactPublished(cwd, context, state);
+  // A failed step never pushes, so a declared remote holding the artifact means a
+  // later landing published it after its own step: the failed record is superseded,
+  // not retried. Without a remote, "published" proves nothing about that step.
+  const superseded = !external.ok && external.status === "failed" && published && publicationRemote(context, state.localOnly) !== null;
+  if (!external.ok && !superseded) return { cleaned: false, reason: `post-integration-${external.status}` };
+  if (!published) return { cleaned: false, reason: "not-published" };
   // Cleanup deletes only checkouts beneath Peach workspace storage.
   if (!await withinWorkspaceStorage(context.current.root)) return { cleaned: false, reason: "outside-workspace-storage" };
   await archiveIntegratedWorkspaceEvidence(gitDirectory, state);
   await retireWorkspace(context.integration.root, context.current, hooks);
-  return { cleaned: true };
+  return superseded
+    ? { cleaned: true, supersededPostIntegration: { status: external.status, attempt: external.attempt, reason: external.reason } }
+    : { cleaned: true };
 }
 
 export async function removeWorkspace(cwd, workspaceName, options = {}) {

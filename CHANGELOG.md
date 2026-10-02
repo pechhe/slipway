@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.1
+
+Ports pechhe/peach-pi#1003 (`92090ecc4`), which landed in peach-pi after the
+v0.1.0 extraction (pechhe/slipway#1).
+
+- **Cleanup:** a workspace whose post-integration step failed is released when the
+  declared remote already contains its artifact, because a later landing
+  published it after running its own step. `cleanup` reports the superseded
+  record (status, attempt, reason), and `cleanupLandedWorkspace` returns it as
+  `supersededPostIntegration`. A failure that is unpublished, or has no declared
+  remote, still keeps the workspace.
+- **Land:** retrying `land` in that state says to run `cleanup` instead of
+  rerunning land.
+
 ## v0.2.0
 
 Neutral names, read and set alongside the Peach names (pechhe/peach-pi#997).

@@ -2,10 +2,11 @@ import { jj, project } from "./support/workspace-project.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vite-plus/test";
-import { createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
+import { cleanupLandedWorkspace, createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
 
 // An Isolated landing that leaves a dirty primary checkout in place still exports
 // its integration and finalizes from a shallow primary `.git` before it publishes.
@@ -98,3 +99,32 @@ test("a policy committed as slipway.json governs landing and finalization at the
     await f.dispose();
   }
 }, 180_000);
+
+// YardSmith yardsmith-t-f13816: a failed step stays failed on retry once the tip moved,
+// but a later landing published the artifact after its own step, so cleanup releases it.
+test("cleanup releases a failed landing only once a later landing has published its artifact", async () => {
+  const { f, ledger, workspace } = await shallowProject(true);
+  try {
+    const first = await land(workspace.workspacePath);
+    assert.equal(first.postIntegration.status, "failed");
+    assert.deepEqual(await cleanupLandedWorkspace(workspace.workspacePath), { cleaned: false, reason: "post-integration-failed" });
+
+    const later = await createWorkspace("later.txt", f.repo);
+    await writeFile(join(later.workspacePath, "later.txt"), "later\n");
+    const published = await land(later.workspacePath);
+    assert.equal(published.ok, true, JSON.stringify({ postIntegration: published.postIntegration, publication: published.publication }));
+    assert.equal(f.remoteFile("landed.txt"), "landed\n");
+
+    const retry = await land(workspace.workspacePath);
+    assert.equal(retry.ok, false);
+    assert.equal(retry.postIntegration.reason, "Historical migration policy changed or is not recoverable");
+    assert.match(retry.publication.reason ?? "", /already published .* run `peach-workspace cleanup`/);
+
+    assert.deepEqual(await cleanupLandedWorkspace(workspace.workspacePath), { cleaned: true,
+      supersededPostIntegration: { status: "failed", attempt: 2, reason: "Historical migration policy changed or is not recoverable" } });
+    assert.equal(existsSync(workspace.workspacePath), false);
+    assert.deepEqual((await ledgerEntries(ledger)).map((entry) => entry.commit), [published.artifact.commitId]);
+  } finally {
+    await f.dispose();
+  }
+}, 300_000);

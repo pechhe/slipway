@@ -141,11 +141,17 @@ export async function completeLanding(cwd, context, commitId, options = {}) {
     ...(options.environment ? { environment: options.environment } : {}),
   });
   timings.publishingStartedAt = Date.now();
-  if (!postIntegration.ok) {
-    return { ok: false, postIntegration, timings: { ...timings, finishedAt: timings.publishingStartedAt }, publication: { ok: false, status: "blocked", commitId,
-      reason: `Post-integration ${postIntegration.status}${postIntegration.reason ? `: ${postIntegration.reason}` : ""}. The local integration is kept; resolve it and rerun land.` } };
-  }
   const remote = publicationRemote(context, options.localOnly);
+  if (!postIntegration.ok) {
+    const failure = `Post-integration ${postIntegration.status}${postIntegration.reason ? `: ${postIntegration.reason}` : ""}.`;
+    // The caller fetched the remote: a later landing that already pushed this artifact ran its own step first.
+    const published = remote && postIntegration.status === "failed"
+      && await revisionExists(cwd, `${commitId} & ::${context.integrationBranch}@${remote}`);
+    return { ok: false, postIntegration, timings: { ...timings, finishedAt: timings.publishingStartedAt }, publication: { ok: false, status: "blocked", commitId,
+      reason: published
+        ? `${failure} A later landing already published ${commitId.slice(0, 9)} to ${context.integrationBranch}@${remote} after its own post-integration step, so nothing remains to land; run \`peach-workspace cleanup\` to release this workspace.`
+        : `${failure} The local integration is kept; resolve it and rerun land.` } };
+  }
   const publication = remote
     ? await publishIntegration(cwd, remote, context.integrationBranch, commitId)
     : { ok: true, status: options.localOnly === true ? "local_only" : "not_declared", commitId };
