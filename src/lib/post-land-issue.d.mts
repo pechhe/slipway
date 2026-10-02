@@ -6,3 +6,5 @@ export function postLandIssueTitle(record: PostLandRecord): string;
 export function postLandIssueBody(record: PostLandRecord): string;
 export function openPostLandIssue(record: PostLandRecord, options?: { env?: NodeJS.ProcessEnv; gh?: GhRunner }): Promise<PostLandIssue | undefined>;
 export function linkPostLandIssue(record: PostLandRecord, options?: { env?: NodeJS.ProcessEnv; gh?: GhRunner }): Promise<PostLandIssue | undefined>;
+export function referencesIssue(description: string | null | undefined, issueNumber: number): boolean;
+export function withIssueTrailer(description: string, issueNumber: number | null | undefined, repository: string | null): string;

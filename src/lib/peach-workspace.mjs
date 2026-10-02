@@ -13,7 +13,7 @@ import { runWorkspaceCommand } from "./workspace-command.mjs";
 import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { describePostLandFailure, latestPostLandResult, startPostLandVerification } from "./post-land-verification.mjs";
-import { githubRepository, originatingIssue } from "./post-land-issue.mjs";
+import { githubRepository, originatingIssue, withIssueTrailer } from "./post-land-issue.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -575,18 +575,24 @@ async function runVerification(context, onProgress = (line) => console.log(line)
 }
 
 async function ensureLandingDescription(cwd, context, target) {
-  if (target.description.trim()) return target;
   const metadata = await workspaceMetadata(context.current.name);
   const issueNumber = typeof metadata?.issueNumber === "number" ? metadata.issueNumber : null;
-  const issueDescription = issueNumber
-    ? await issueTitle(context.integration.root, issueNumber)
-    : null;
-  const taskDescription = typeof metadata?.task === "string" ? metadata.task.trim() : "";
-  const description = (issueDescription?.trim() || taskDescription).slice(0, 500);
-  // A post-land failure Issue carries this description; a placeholder would carry nothing.
-  if (!description)
-    throw new Error(`Landing needs a description of the change: run \`jj describe -r ${target.changeId} -m "<what this change does>"\` and land again`);
-  await jj(cwd, ["describe", "-r", target.changeId, "-m", description]);
+  let description = target.description.trim();
+  if (!description) {
+    const issueDescription = issueNumber
+      ? await issueTitle(context.integration.root, issueNumber)
+      : null;
+    const taskDescription = typeof metadata?.task === "string" ? metadata.task.trim() : "";
+    description = (issueDescription?.trim() || taskDescription).slice(0, 500);
+    // A post-land failure Issue carries this description; a placeholder would carry nothing.
+    if (!description)
+      throw new Error(`Landing needs a description of the change: run \`jj describe -r ${target.changeId} -m "<what this change does>"\` and land again`);
+  }
+  // The landed commit names its Issue itself, so attribution survives machine-local state.
+  const remotes = issueNumber ? await jj(cwd, ["--ignore-working-copy", "git", "remote", "list"]).catch(() => "") : "";
+  const described = withIssueTrailer(description, issueNumber, githubRepository(remotes, context.configuration.remote));
+  if (described === target.description.trim() && target.description.trim()) return target;
+  await jj(cwd, ["describe", "-r", target.changeId, "-m", described]);
   return revisionFacts(cwd, target.changeId);
 }
 

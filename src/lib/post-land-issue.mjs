@@ -23,6 +23,21 @@ export function originatingIssue(issueNumber, description) {
   return match ? Number(match[1]) : null;
 }
 
+/** Whether `description` already refers to Issue `issueNumber` (`#N`, `Fixes #N`, or `owner/repo#N`). */
+export function referencesIssue(description, issueNumber) {
+  return new RegExp(`(?<![\\w&])#${issueNumber}(?!\\d)|[\\w.-]+/[\\w.-]+#${issueNumber}(?!\\d)`).test(description ?? "");
+}
+
+/** `description` plus an `Issue: owner/repo#N` git trailer, unless it has no Issue or already names it. */
+export function withIssueTrailer(description, issueNumber, repository) {
+  const text = (description ?? "").trimEnd();
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0 || referencesIssue(text, issueNumber)) return text;
+  const trailer = `Issue: ${repository ?? ""}#${issueNumber}`;
+  const paragraphs = text.split(/\n\s*\n/);
+  const inTrailerBlock = paragraphs.length > 1 && paragraphs.at(-1).split("\n").every((line) => /^[A-Za-z][\w-]*: \S/.test(line));
+  return `${text}${inTrailerBlock ? "\n" : "\n\n"}${trailer}`;
+}
+
 const firstLine = (record) => (record.description ?? "").split(/\r?\n/)[0].trim() || record.commit.slice(0, 12);
 
 export function postLandIssueTitle(record) {
