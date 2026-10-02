@@ -1,0 +1,83 @@
+import { jj, project } from "./support/workspace-project.ts";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "vite-plus/test";
+import { createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
+
+// An Isolated landing that leaves a dirty primary checkout in place still exports
+// its integration and finalizes from a shallow primary `.git` before it publishes.
+
+type Fixture = Awaited<ReturnType<typeof project>>;
+
+/** A development-only step recording the exact source it ran from; `failFirst` fails its first run. */
+function finalization(ledger: string, failFirst = false) {
+  const marker = `${ledger}.failed-once`;
+  const source = `const fs=require("node:fs");
+if (${failFirst} && !fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, ""); process.exit(9); }
+fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: process.env.PEACH_FINALIZATION_COMMIT, landed: fs.existsSync("landed.txt") }) + "\\n");`;
+  return {
+    version: 1, target: "fixture-development-db", idempotency: "artifact-key", approvalMode: "automatic-development", timeoutMs: 30_000,
+    command: { executable: "node", args: ["-e", source] },
+    targetProbe: { executable: "node", args: ["-e", "console.log(JSON.stringify({ target: \"fixture-development-db\" }))"] },
+  };
+}
+
+const primaryRef = (f: Fixture) => execFileSync("git", ["--git-dir", join(f.repo, ".git"), "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
+const ledgerEntries = async (ledger: string) => (await readFile(ledger, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+
+async function shallowProject(failFirst = false) {
+  // Outside the project, so the policy can name it before the project exists.
+  const external = await mkdtemp(join(tmpdir(), "peach-finalization-target-"));
+  const ledger = join(external, "ledger.jsonl");
+  const created = await project({ shallow: true, postIntegration: finalization(ledger, failFirst) });
+  const f = { ...created, dispose: async () => { await Promise.all([created.dispose(), rm(external, { recursive: true, force: true })]); } };
+  await access(join(f.repo, ".git", "shallow"));
+  await writeFile(join(f.repo, "local.txt"), "unlanded\n");
+  const workspace = await createWorkspace("landed.txt", f.repo);
+  await writeFile(join(workspace.workspacePath, "landed.txt"), "landed\n");
+  return { f, ledger, workspace };
+}
+
+const land = (path: string) => landWorkspace(path, { onProgress: () => {}, sweepOtherWorkspaces: false });
+
+test("a shallow primary with uncommitted edits finalizes and publishes an Isolated landing", async () => {
+  const { f, ledger, workspace } = await shallowProject();
+  try {
+    const result = await land(workspace.workspacePath);
+    assert.equal(result.ok, true, JSON.stringify({ postIntegration: result.postIntegration, publication: result.publication }));
+    assert.equal(result.postIntegration.status, "complete");
+    assert.equal(result.publication.status, "pushed");
+    assert.deepEqual(result.primaryCheckout, { action: "left", reason: "unlanded-changes" });
+    assert.deepEqual(await ledgerEntries(ledger), [{ commit: result.artifact.commitId, landed: true }]);
+    assert.equal(primaryRef(f), result.artifact.commitId);
+    assert.equal(f.remoteFile("landed.txt"), "landed\n");
+    assert.equal(await readFile(join(f.repo, "local.txt"), "utf8"), "unlanded\n");
+  } finally {
+    await f.dispose();
+  }
+}, 180_000);
+
+test("rerunning an integrated but unpublished landing finalizes and publishes without ref edits", async () => {
+  const { f, ledger, workspace } = await shallowProject(true);
+  try {
+    const first = await land(workspace.workspacePath);
+    assert.equal(first.ok, false);
+    assert.equal(first.postIntegration.status, "failed");
+    assert.equal(first.publication.status, "blocked");
+    assert.equal(jj(f.repo, ["--ignore-working-copy", "log", "-r", "main", "--no-graph", "-T", "commit_id"]), first.artifact.commitId);
+
+    const retry = await land(workspace.workspacePath);
+    assert.equal(retry.ok, true, JSON.stringify({ postIntegration: retry.postIntegration, publication: retry.publication }));
+    assert.equal(retry.artifact.commitId, first.artifact.commitId);
+    assert.equal(retry.postIntegration.status, "complete");
+    assert.equal(retry.publication.status, "pushed");
+    assert.deepEqual(await ledgerEntries(ledger), [{ commit: first.artifact.commitId, landed: true }]);
+    assert.equal(primaryRef(f), first.artifact.commitId);
+    assert.equal(f.remoteFile("landed.txt"), "landed\n");
+  } finally {
+    await f.dispose();
+  }
+}, 240_000);

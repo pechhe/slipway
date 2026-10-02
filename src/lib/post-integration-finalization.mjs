@@ -8,7 +8,7 @@ import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { exactPostIntegrationApproval, postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
-import { readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
+import { SourcePreparationFailure, readPostIntegrationPolicy, withFinalizationSource } from "./post-integration-source.mjs";
 import { HistoricalMigrationFailure, artifactKey, coveredByCompletedAncestor, historicalMigrationTip, isAncestor, readState, receiptPath,
   targetKeyOf, verifyHistoricalMigrationSpan, writeTargetOutcome } from "./post-integration-coverage.mjs";
 
@@ -198,6 +198,7 @@ export async function finalizePostIntegration(input) {
       return complete;
     } catch (error) {
       if (error instanceof HistoricalMigrationFailure) reason = error.message;
+      else if (error instanceof SourcePreparationFailure) reason = `Exact source preparation failed: ${error.message}`;
       const failed = { ...accepted, ok: false, status: "failed", attempt, reason };
       await writeTargetOutcome(stateDirectory, targetKey, { ...outcome, status: "failed" });
       await writeWorkspaceJson(statePath, failed);

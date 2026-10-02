@@ -703,6 +703,11 @@ async function startPostLand(cwd, context, result, runner, environment) {
 export async function completeLanding(cwd, context, commitId, options = {}) {
   // Wall-clock stage starts for the CLI's timing line; not landing evidence.
   const timings = { finalizingStartedAt: Date.now() };
+  // A secondary workspace never exports to the colocated Git repository, and an
+  // Isolated landing may run no JJ command in the primary checkout, so export the
+  // integration bookmark for Git-level consumers. Finalization reads the exact
+  // object, not this ref, so an export JJ declines does not block publication.
+  await jj(cwd, ["--ignore-working-copy", "git", "export"]);
   const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
   const postIntegration = await finalizePostIntegration({
     gitDirectory, integratedCommitSha: commitId, approval: options.postIntegrationApproval,
