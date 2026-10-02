@@ -21,7 +21,18 @@ bun add -g github:pechhe/slipway#v0.1.0
 slipway status
 ```
 
-The repository is private, so the installing account needs GitHub access to it.
+The repository is private. Bun 1.4 downloads a `github:` dependency as an
+unauthenticated `api.github.com` tarball, so it gets a 404 for a private repository
+and ignores `GITHUB_TOKEN`. To authenticate it, put the token in the API base URL
+for that one command (nothing is persisted in `bun.lock`):
+
+```sh
+GITHUB_API_URL="https://x-access-token:$(gh auth token)@api.github.com" \
+  bun add -g github:pechhe/slipway#v0.1.0
+```
+
+`slipway` is installed beside `peach-workspace` and leaves `~/.pi/agent/bin` and
+`~/.pi/agent/lib` alone.
 
 ## CLI
 
