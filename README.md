@@ -25,7 +25,9 @@ The repository is private, so the installing account needs GitHub access to it.
 
 ## CLI
 
-`slipway <command>` offers every `peach-workspace` command with the same behaviour:
+`slipway <command>` offers every `peach-workspace` command with the same behaviour,
+plus what a Claude Code `WorktreeCreate`/`WorktreeRemove` hook needs without library
+imports (`start --integration --issue <n> --json`, `remove <path>`):
 
 | Command | Effect |
 | --- | --- |
@@ -36,9 +38,11 @@ The repository is private, so the installing account needs GitHub access to it.
 | `prune --empty` | Remove empty workspaces. |
 | `attach-issue <n>` | Bind the current workspace to Issue `n`. |
 | `start "task"` | Assign an isolated workspace for a task and print its path. |
+| `start [--integration] [--issue <n>] [--refill] [--json] ["task"]` | `--integration` allocates from the integration checkout even inside a workspace; `--issue` creates or resumes that Issue's workspace (the task defaults to `Issue #<n>`); `--refill` then starts a background spare refill; `--json` prints one JSON object (`workspacePath`, `workspaceName`, `integrationRoot`, `issueNumber`, `created`, `reused`, `pooled`, `refill`) and sends all install output to stderr. |
 | `preview` | Diffstat of what a landing would integrate. |
 | `land [--local-only] [--direct]` | Verify, integrate and publish the current workspace (or, with `--direct`, the primary checkout). |
-| `cleanup` | Remove the current workspace once it has landed. |
+| `cleanup [path]` | Remove the current (or given) workspace once it has landed. |
+| `remove <path>` | Remove the workspace at `path` if it has landed or is untouched; otherwise keep it and exit 1. |
 | `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). |
 
 ## Library
