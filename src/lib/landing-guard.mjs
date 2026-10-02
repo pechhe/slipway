@@ -1,6 +1,7 @@
 /**
  * A Claude Code PreToolUse guard: in a repository governed by `slipway.json`, the
- * integration branch moves and is published only through `slipway land`.
+ * integration branch moves and is published only through `slipway land`, and a
+ * declared release branch only through `slipway release`.
  * Pushing feature bookmarks for a pull request stays allowed.
  */
 import { readFile } from "node:fs/promises";
@@ -8,6 +9,7 @@ import { dirname, join } from "node:path";
 import { EXECUTION_POLICY_PROBE_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
 const LAND = "Use `slipway land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
+const RELEASE = "Use `slipway release`: it verifies the exact candidate and publishes the release after human approval.";
 
 /** The raw `integrationBranch` of an unparseable or refused policy text, if it names one. */
 const rawBranch = (raw) => {
@@ -29,20 +31,26 @@ async function governance(cwd) {
     let found;
     try { found = await selectExecutionPolicyPath(async (candidate) => texts.has(candidate), dir); } catch (error) {
       const declared = rawBranch([...texts.values()][0]);
-      return { branches: [...new Set([...(declared ? [declared] : []), "main", "master"])], retired: error.message };
+      return { branches: [...new Set([...(declared ? [declared] : []), "main", "master"])], release: null, retired: error.message };
     }
     if (found !== null) {
       const raw = texts.get(found);
       let declared;
+      let release = null;
       // An invalid policy still governs: keep guarding whatever branch it names.
-      try { declared = parseExecutionPolicy(raw, found).integrationBranch; } catch { declared = rawBranch(raw); }
-      return { branches: typeof declared === "string" && declared ? [declared] : ["main", "master"], retired: null };
+      try {
+        const policy = parseExecutionPolicy(raw, found);
+        declared = policy.integrationBranch;
+        release = policy.releaseBranch ?? null;
+      } catch { declared = rawBranch(raw); }
+      const integration = typeof declared === "string" && declared ? [declared] : ["main", "master"];
+      return { branches: [...new Set([...integration, ...(release ? [release] : [])])], release, retired: null };
     }
     if (dirname(dir) === dir) return null;
   }
 }
 
-/** Nearest policy above `cwd` (`slipway.json`), with its integration branches; null when ungoverned. */
+/** Nearest policy above `cwd` (`slipway.json`), with its guarded branches; null when ungoverned. */
 export async function governedBranches(cwd) {
   return (await governance(cwd))?.branches ?? null;
 }
@@ -85,18 +93,24 @@ function subcommand(args, valued) {
 
 const branchOf = (ref) => ref.replace(/^\+/, "").split(":").pop().replace(/^refs\/heads\//, "");
 
+/** A violation is `[reason, branch]`; the branch is null when the command is not specific to one. */
 function gitViolation(args, branches) {
   const [verb, ...rest] = subcommand(args, ["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
   if (verb === "push") {
-    if (rest.some((arg) => ["--all", "--mirror", "--delete", "-d"].includes(arg))) return "pushes every branch or deletes one";
+    if (rest.some((arg) => ["--all", "--mirror", "--delete", "-d"].includes(arg))) return ["pushes every branch or deletes one", null];
     const refspecs = rest.filter((arg) => !arg.startsWith("-")).slice(1);
-    if (!refspecs.length) return "pushes the current branch, which may be the integration branch";
-    const hit = refspecs.find((ref) => branches.includes(branchOf(ref)));
-    return hit ? `pushes ${branchOf(hit)}` : null;
+    if (!refspecs.length) return ["pushes the current branch, which may be the integration branch", null];
+    const hit = refspecs.map(branchOf).find((branch) => branches.includes(branch));
+    return hit ? [`pushes ${hit}`, hit] : null;
   }
-  if (verb === "update-ref") return rest.some((arg) => branches.includes(branchOf(arg))) ? "moves the integration branch" : null;
-  if (verb === "branch" && rest.some((arg) => /^-(?:f|D|m|M|-force|-delete|-move)/.test(arg)))
-    return rest.some((arg) => branches.includes(arg)) ? "rewrites the integration branch" : null;
+  if (verb === "update-ref") {
+    const hit = rest.map(branchOf).find((branch) => branches.includes(branch));
+    return hit ? [`moves ${hit}`, hit] : null;
+  }
+  if (verb === "branch" && rest.some((arg) => /^-(?:f|D|m|M|-force|-delete|-move)/.test(arg))) {
+    const hit = rest.find((arg) => branches.includes(arg));
+    return hit ? [`rewrites ${hit}`, hit] : null;
+  }
   return null;
 }
 
@@ -106,7 +120,7 @@ const BOOKMARK_ACTIONS = { s: "set", set: "set", m: "move", move: "move", c: "cr
 function jjViolation(args, branches) {
   const [verb, action, ...rest] = subcommand(args, ["-R", "--repository", "--config", "--config-file", "--at-op", "--at-operation", "--color"]);
   if (verb === "git" && action === "push") {
-    if (rest.some((arg) => ["--all", "--tracked", "--deleted"].includes(arg))) return "pushes every tracked bookmark";
+    if (rest.some((arg) => ["--all", "--tracked", "--deleted"].includes(arg))) return ["pushes every tracked bookmark", null];
     const named = [];
     for (let i = 0; i < rest.length; i += 1) {
       const arg = rest[i];
@@ -114,24 +128,29 @@ function jjViolation(args, branches) {
       else if (/^--(?:bookmark|named)=/.test(arg)) named.push(arg.slice(arg.indexOf("=") + 1));
       else if (["-c", "--change", "-r", "--revisions"].includes(arg)) named.push("");
     }
-    if (!named.length) return "pushes tracked bookmarks, which include the integration branch";
+    if (!named.length) return ["pushes tracked bookmarks, which include the integration branch", null];
     const hit = named.map((name) => name.split("=")[0]).find((name) => branches.includes(name));
-    return hit ? `pushes ${hit}` : null;
+    return hit ? [`pushes ${hit}`, hit] : null;
   }
-  if ((verb === "bookmark" || verb === "b") && BOOKMARK_ACTIONS[action])
-    return rest.some((arg) => branches.includes(arg)) ? `${BOOKMARK_ACTIONS[action]}s the integration bookmark` : null;
+  if ((verb === "bookmark" || verb === "b") && BOOKMARK_ACTIONS[action]) {
+    const hit = rest.find((arg) => branches.includes(arg));
+    return hit ? [`${BOOKMARK_ACTIONS[action]}s the ${hit} bookmark`, hit] : null;
+  }
   return null;
 }
 
-/** Why this shell line bypasses landing in a repository with these integration branches, or null. */
-export function landingBypass(line, branches) {
+/**
+ * Why this shell line bypasses landing (or, for `releaseBranch`, release) in a
+ * repository guarding these branches, or null.
+ */
+export function landingBypass(line, branches, releaseBranch = null) {
   for (const [program, ...args] of simpleCommands(line)) {
     const name = program.split("/").pop();
-    const reason = name === "git" ? gitViolation(args, branches)
+    const violation = name === "git" ? gitViolation(args, branches)
       : name === "jj" ? jjViolation(args, branches)
-      : name === "gh" && args[0] === "pr" && args[1] === "merge" ? "merges a pull request into the integration branch"
+      : name === "gh" && args[0] === "pr" && args[1] === "merge" ? ["merges a pull request into the integration branch", null]
       : null;
-    if (reason) return `This command ${reason}. ${LAND}`;
+    if (violation) return `This command ${violation[0]}. ${releaseBranch && violation[1] === releaseBranch ? RELEASE : LAND}`;
   }
   return null;
 }
@@ -140,7 +159,7 @@ export function landingBypass(line, branches) {
 export async function landingGuardDecision(input) {
   if (input?.tool_name !== "Bash" || typeof input.tool_input?.command !== "string") return null;
   const governed = await governance(input.cwd ?? process.cwd());
-  const bypass = governed && landingBypass(input.tool_input.command, governed.branches);
+  const bypass = governed && landingBypass(input.tool_input.command, governed.branches, governed.release);
   const reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
   return reason ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } } : null;
 }

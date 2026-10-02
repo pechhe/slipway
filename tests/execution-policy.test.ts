@@ -128,6 +128,20 @@ test("the strict rules reject unsafe or malformed policies", () => {
   rejects(policy({ migrationFinalization: { ...yardsmithPolicy.migrationFinalization, generate: check("../bun") } }), /safe command/);
 });
 
+test("a release branch declares its own checks, and unsafe release declarations are refused", () => {
+  const parsed = parseExecutionPolicy(JSON.stringify({ version: 1, integrationBranch: "develop", releaseBranch: "master",
+    requiredReleaseVerification: [{ executable: "bun", args: ["run", "check:static"] }] }));
+  assert.equal(parsed.releaseBranch, "master");
+  assert.deepEqual(parsed.requiredReleaseVerification, [{ executable: "bun", args: ["run", "check:static"] }]);
+  assert.equal(parseExecutionPolicy(JSON.stringify({ version: 1, releaseBranch: "master" })).requiredReleaseVerification, undefined);
+  for (const policy of [
+    { version: 1, integrationBranch: "develop", releaseBranch: "develop" },
+    { version: 1, releaseBranch: "-master" },
+    { version: 1, requiredReleaseVerification: [] },
+    { version: 1, releaseBranch: "master", requiredReleaseVerification: [{ executable: "sh", args: ["-c", "true"] }] },
+  ]) assert.throws(() => parseExecutionPolicy(JSON.stringify(policy)), JSON.stringify(policy));
+});
+
 test("integration branches resolve declared, then origin/HEAD, then main, then master", async () => {
   const exists = (names: string[]) => async (name: string) => names.includes(name);
   assert.equal(await resolveIntegrationBranch({ declared: "develop", originHead: async () => "master", exists: exists([]) }), "develop");

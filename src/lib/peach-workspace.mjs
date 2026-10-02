@@ -31,6 +31,7 @@ export { cutoverPending } from "./workspace-paths.mjs";
 // Landing and its verification (CLI, extension, desktop delivery).
 export { assertWorkspaceDelivered, landWorkspace, prepareWorkspaceContinuation } from "./workspace-landing.mjs";
 export { landingPreview } from "./landing-steps.mjs";
+export { planRelease, releaseIntegration } from "./release.mjs";
 export { RequiredVerificationError, runRequiredVerification } from "./required-verification.mjs";
 export { classifyCapabilityProbe, normalizeDeclaredVerification, normalizeVerificationDeclaration } from "./verification-policy.mjs";
 export { redactVerificationOutput } from "./verification-failure.mjs";

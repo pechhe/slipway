@@ -17,6 +17,10 @@ export type ExecutionPolicy = {
   remote: string | null;
   parallelExecution: boolean;
   requiredLocalVerification: VerificationDeclaration[];
+  /** The branch `slipway release` promotes the integration branch to. */
+  releaseBranch?: string;
+  /** Checks the exact release candidate must pass; undefined when undeclared. */
+  requiredReleaseVerification?: VerificationDeclaration[];
   postLandVerification: PostLandCheck[];
   migrationFinalization: MigrationFinalizationPolicy | null;
   generatedPaths?: unknown;

@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0
+
+- **Release:** `slipway release` promotes the integration branch to a declared
+  `releaseBranch`. It plans by default; `--confirm <commit>` verifies that exact
+  published commit against `requiredReleaseVerification` in a checkout of its own,
+  publishes a merge whose tree is the verified tree, and refuses if the release
+  branch moved or has changes the integration branch lacks. A range carrying
+  migration artifacts also needs `--migrations-ready`. Releases are recorded in
+  `~/.slipway/state/releases`.
+- **Guard:** the landing guard also denies moving or pushing a declared release
+  branch, and points to `slipway release`. Its denials now name the branch.
+
 ## v1.1.0
 
 The transition names are gone: only `slipway.json` and `SLIPWAY_*` exist

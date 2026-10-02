@@ -75,12 +75,12 @@ function postLandChecks(value) {
   });
 }
 
-/** Landing's declared checks, in exactly the shape the verification digest has always covered. */
-function requiredLocalVerification(value) {
+/** Declared gate checks (landing's in exactly the shape the verification digest has always covered). */
+function gateChecks(value, name = "requiredLocalVerification") {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.length > MAX_CHECKS) fail(`requiredLocalVerification must be a list of at most ${MAX_CHECKS} commands`);
+  if (!Array.isArray(value) || value.length > MAX_CHECKS) fail(`${name} must be a list of at most ${MAX_CHECKS} commands`);
   return value.map((entry, index) => {
-    const field = `requiredLocalVerification[${index}]`;
+    const field = `${name}[${index}]`;
     const check = normalizeVerificationDeclaration(entry, field);
     gateCommand(check, field);
     if (check.capability) gateCommand(check.capability.probe, `${field}.capability.probe`);
@@ -136,6 +136,25 @@ export function generatedPathMatchers(declared) {
 }
 
 /**
+ * `slipway release`'s declaration: the branch the integration branch is promoted to
+ * and the checks the exact candidate commit must pass first. A release branch with
+ * no declared checks is refused at release time, so an empty list must be explicit.
+ */
+function releasePolicy(parsed) {
+  if (parsed.releaseBranch == null) {
+    if (parsed.requiredReleaseVerification != null) fail("declares requiredReleaseVerification without a releaseBranch");
+    return { releaseBranch: undefined, requiredReleaseVerification: undefined };
+  }
+  if (typeof parsed.releaseBranch !== "string" || !SAFE_BRANCH.test(parsed.releaseBranch)) fail("declares an unsafe releaseBranch");
+  if (parsed.releaseBranch === (parsed.integrationBranch ?? null)) fail("releaseBranch must differ from integrationBranch");
+  return {
+    releaseBranch: parsed.releaseBranch,
+    requiredReleaseVerification: parsed.requiredReleaseVerification == null ? undefined
+      : gateChecks(parsed.requiredReleaseVerification, "requiredReleaseVerification"),
+  };
+}
+
+/**
  * Parse a policy file's text strictly. Landing's sections are normalized; every
  * other declaration (`postIntegration`, `generatedPaths`, `sourcePublication`,
  * `requiredChecks`, …) is kept as declared, after validation where Peach owns it.
@@ -162,7 +181,8 @@ function parsePolicyText(raw) {
     integrationBranch: parsed.integrationBranch ?? undefined,
     remote: declaredPublicationRemote(parsed),
     parallelExecution: parsed.parallelExecution === true,
-    requiredLocalVerification: requiredLocalVerification(parsed.requiredLocalVerification),
+    requiredLocalVerification: gateChecks(parsed.requiredLocalVerification),
+    ...releasePolicy(parsed),
     postLandVerification: postLandChecks(parsed.postLandVerification ?? []),
     migrationFinalization: migrationFinalization(parsed.migrationFinalization),
   };

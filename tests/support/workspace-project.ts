@@ -20,10 +20,12 @@ export const recordCheckout = (verified: string) => `require("node:fs").appendFi
 /**
  * `shallow` makes the colocated primary `.git` a depth-1 clone of `origin` (as
  * YardSmith's is); `postIntegration` declares that external-state step; `policyPath`
- * is where the policy is committed (`slipway.json` by default; the retired path builds a refused fixture).
+ * is where the policy is committed (`slipway.json` by default; the retired path builds a refused fixture);
+ * `policy` adds further declarations.
  */
 export async function project(options: { ignore?: string; generatedPaths?: unknown; verify?: (verified: string) => string;
-  shallow?: boolean; postIntegration?: Record<string, unknown>; policyPath?: "slipway.json" | ".peach/execution.json" } = {}) {
+  shallow?: boolean; postIntegration?: Record<string, unknown>; policyPath?: "slipway.json" | ".peach/execution.json";
+  policy?: Record<string, unknown> } = {}) {
   process.env.JJ_USER ??= "Fixture";
   process.env.JJ_EMAIL ??= "fixture@example.com";
   const root = await realpath(await mkdtemp(join(tmpdir(), "peach-rollover-")));
@@ -46,6 +48,7 @@ export async function project(options: { ignore?: string; generatedPaths?: unkno
     requiredLocalVerification: [{ executable: "node", args: ["-e", options.verify?.(verified) ?? recordCheckout(verified)] }],
     ...(options.generatedPaths === undefined ? {} : { generatedPaths: options.generatedPaths }),
     ...(options.postIntegration === undefined ? {} : { postIntegration: options.postIntegration }),
+    ...options.policy,
   }));
   git(["add", "."]);
   git(["commit", "-qm", "Initial"]);

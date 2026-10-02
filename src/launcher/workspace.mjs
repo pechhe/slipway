@@ -7,6 +7,7 @@ import {
   landWorkspace,
   inspectWorkspaces,
   landingPreview,
+  releaseIntegration,
   pruneEmptyWorkspaces,
   readWorkspaceMode,
   workspaceContext,
@@ -119,6 +120,23 @@ async function removeWorkspaceAt(path) {
   }
   console.error(`Kept jj:${name}: ${describeRetention(result)}`);
   return 1;
+}
+
+/**
+ * `release [--confirm <commit>] [--migrations-ready]`: plan a release, or, with the
+ * candidate commit a human approved, verify and publish it. Progress goes to
+ * stderr; stdout is one JSON result.
+ */
+async function runRelease(args) {
+  const options = { migrationsReady: false };
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--migrations-ready") options.migrationsReady = true;
+    else if (args[index] === "--confirm" && args[index + 1] && !args[index + 1].startsWith("-")) options.confirm = args[++index];
+    else throw new Error("Usage: slipway release [--confirm <commit>] [--migrations-ready]");
+  }
+  const result = await releaseIntegration(process.cwd(), { ...options, onProgress: (line) => console.error(line) });
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
 }
 
 /** `cutover [--check]`: move pre-v1.0.0 state to ~/.slipway once, or only report whether it would. */
@@ -236,6 +254,8 @@ try {
       ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
+  } else if (command === "release") {
+    process.exitCode = await runRelease(rest);
   } else if (command === "post-land-run") {
     // Internal: the detached process a landing starts for its background
     // verification. Landings take priority over it for the machine.
@@ -257,7 +277,7 @@ try {
     if (rest.length !== 1 || rest[0].startsWith("-")) throw new Error("Usage: slipway remove <path>");
     process.exitCode = await removeWorkspaceAt(resolve(rest[0]));
   } else {
-    console.error("Usage: slipway <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|cleanup [path]|remove <path>|cutover [--check]>");
+    console.error("Usage: slipway <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|release [--confirm <commit>] [--migrations-ready]|cleanup [path]|remove <path>|cutover [--check]>");
     process.exitCode = 2;
   }
 } catch (error) {

@@ -78,7 +78,7 @@ Releases are git tags. Nothing is published to npm. The unscoped `slipway` name
 there belongs to an unrelated package.
 
 ```sh
-bun add -g github:pechhe/slipway#v1.1.0
+bun add -g github:pechhe/slipway#v1.2.0
 slipway status
 ```
 
@@ -105,10 +105,46 @@ imports (`start --integration --issue <n> --json`, `remove <path>`):
 | `start [--integration] [--issue <n>] [--refill] [--json] ["task"]` | `--integration` allocates from the integration checkout even inside a workspace; `--issue` creates or resumes that Issue's workspace (the task defaults to `Issue #<n>`); `--refill` then starts a background spare refill; `--json` prints one JSON object (`workspacePath`, `workspaceName`, `integrationRoot`, `issueNumber`, `created`, `reused`, `pooled`, `refill`) and sends all install output to stderr. |
 | `preview` | Diffstat of what a landing would integrate. |
 | `land [--local-only] [--direct]` | Verify, integrate and publish the current workspace (or, with `--direct`, the primary checkout). |
+| `release [--confirm <commit>] [--migrations-ready]` | Plan a promotion of the integration branch to the declared release branch, or verify and publish the confirmed candidate (see [Release](#release)). |
 | `cleanup [path]` | Remove the current (or given) workspace once it has landed. |
 | `remove <path>` | Remove the workspace at `path` if it has landed or is untouched; otherwise keep it and exit 1. |
-| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). |
+| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). It denies moving or pushing the integration branch outside `land`, and a declared release branch outside `release`. |
 | `cutover [--check]` | Move pre-v1.0.0 state to `~/.slipway` once and retire `peach-workspace` (see [State and cutover](#state-and-cutover)). |
+
+## Release
+
+A repository that declares a `releaseBranch` in `slipway.json` promotes its
+integration branch to it only through `slipway release`:
+
+```json
+{ "integrationBranch": "develop", "releaseBranch": "master",
+  "requiredReleaseVerification": [{ "executable": "bun", "args": ["run", "check:static"] }] }
+```
+
+`requiredReleaseVerification` takes the same command shape as
+`requiredLocalVerification`. A release branch without it is refused; declare `[]`
+to release without checks. The policy that applies is the one committed in the
+candidate.
+
+1. `slipway release` fetches and plans: the candidate (the integration branch on
+   the remote), the base (the release branch on the remote), the commits between
+   them, the declared checks, and any files under
+   `migrationFinalization.artifactPaths` in that range. It publishes nothing.
+2. After explicit human approval of that candidate, `slipway release --confirm
+   <commit>` checks the exact commit out on its own under
+   `~/.slipway/state/releases/checkouts`, prepares its dependencies and runs the
+   checks inside the repository's verification slot. The candidate must already be
+   published on the integration branch.
+3. It builds the merge `Release <integration> to <release>` (parents: base, then
+   candidate; a `Release-Candidate:` trailer) and refuses unless the merge is
+   conflict-free and its tree is the candidate's, so a release branch with changes
+   the integration branch lacks is refused rather than merged.
+4. It pushes the release branch, refusing if the remote moved since the plan, and
+   records the release in `~/.slipway/state/releases`.
+
+A release whose range carries migration artifacts also needs `--migrations-ready`:
+apply those migrations where the release branch deploys first. slipway never
+migrates a release environment itself.
 
 ## Library
 
