@@ -13,6 +13,7 @@ import { runBoundedProcess } from "./bounded-process.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
 import { withFinalizationSource } from "./post-integration-source.mjs";
 import { withVerificationSlot } from "./verification-slot.mjs";
+import { linkPostLandIssue, openPostLandIssue } from "./post-land-issue.mjs";
 
 const RETAINED_RECORDS = 30;
 const CHECK_TIMEOUT_MS = 45 * 60_000;
@@ -27,29 +28,32 @@ const recordFile = (commit) => path.join(postLandRoot(), `${commit}.json`);
  * landing, such as the CLI, passes `runner`: a command that runs one record file
  * (appended) and outlives it.
  */
-export async function startPostLandVerification({ integrationRoot, gitDirectory, base, commit, checks, runner, env = process.env }) {
+export async function startPostLandVerification({ integrationRoot, gitDirectory, base, commit, checks, runner, env = process.env, landing = {} }) {
   await mkdir(postLandRoot(), { recursive: true, mode: 0o700 });
   const file = recordFile(commit);
+  // `landing` is the context a failure Issue carries: description, diff stat,
+  // originating Issue and GitHub repository, captured while the workspace exists.
   const record = {
     version: 1, status: "queued", integrationRoot, gitDirectory, base, commit, checks,
-    queuedAt: new Date().toISOString(), log: path.join(postLandRoot(), `${commit}.log`),
+    queuedAt: new Date().toISOString(), log: path.join(postLandRoot(), `${commit}.log`), ...landing,
   };
   await writeFile(file, JSON.stringify(record, null, 2), { mode: 0o600 });
   await writeFile(record.log, "", { mode: 0o600 });
-  const refuse = (error) => writeFile(file, JSON.stringify({
-    ...record, status: "error", reason: `post-land verification could not start: ${error instanceof Error ? error.message : String(error)}`,
-    finishedAt: new Date().toISOString(),
-  }, null, 2), { mode: 0o600 }).catch(() => {});
+  const refuse = async (error) => {
+    const failed = { ...record, status: "error", reason: `post-land verification could not start: ${error instanceof Error ? error.message : String(error)}` };
+    await reportFailure(failed, env);
+    await writeFile(file, JSON.stringify({ ...failed, finishedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+  };
   // Kept apart from the record, which only the runner writes once started.
   let pid = process.pid;
   if (runner) {
     const [executable, ...args] = runner;
     const child = spawn(executable, [...args, file], { detached: true, stdio: "ignore", env });
-    child.once("error", refuse);
+    child.once("error", (error) => void refuse(error).catch(() => {}));
     child.unref();
     pid = child.pid ?? 0;
   } else {
-    void runPostLandVerification(file, env).catch(refuse);
+    void runPostLandVerification(file, env).catch((error) => refuse(error).catch(() => {}));
   }
   if (pid) await writeFile(pidFile(commit), String(pid), { mode: 0o600 });
   await pruneRecords();
@@ -97,7 +101,21 @@ export async function latestPostLandResult(integrationRoot) {
 export function describePostLandFailure(record) {
   if (!record || record.status === "passed") return null;
   const what = record.failed ? `${record.failed.command} exited ${record.failed.exitCode}` : record.reason ?? record.status;
-  return `Post-land verification of ${record.commit.slice(0, 12)} ${record.status}: ${what}. Log: ${record.log}`;
+  const issue = record.issue?.url ? ` Issue: ${record.issue.url}` : "";
+  return `Post-land verification of ${record.commit.slice(0, 12)} ${record.status}: ${what}. Log: ${record.log}${issue}`;
+}
+
+/**
+ * Open (once) and link the failure Issue on `record.issue`. `save` persists the
+ * URL before linking, so a restart reuses the Issue instead of opening another.
+ */
+async function reportFailure(record, env, gh, save = async () => {}) {
+  if (record.status !== "failed" && record.status !== "error") return;
+  const options = gh ? { env, gh } : { env };
+  record.issue = await openPostLandIssue(record, options);
+  await save();
+  record.issue = await linkPostLandIssue(record, options);
+  await save();
 }
 
 async function runChecks(record, update, baseEnv) {
@@ -126,8 +144,11 @@ async function runChecks(record, update, baseEnv) {
   });
 }
 
-/** One run: wait for earlier runs, verify, record the outcome. `env` is the landing's command environment. */
-export async function runPostLandVerification(file, env = process.env) {
+/**
+ * One run: wait for earlier runs, verify, record the outcome, and open a failure
+ * Issue. `env` is the landing's command environment; `gh` is injectable for tests.
+ */
+export async function runPostLandVerification(file, env = process.env, { gh } = {}) {
   const record = JSON.parse(await readFile(file, "utf8"));
   const update = async (fields) => {
     Object.assign(record, fields);
@@ -142,5 +163,7 @@ export async function runPostLandVerification(file, env = process.env) {
   } catch (error) {
     await update({ status: "error", reason: error instanceof Error ? error.message : String(error) });
   }
+  // Outside the verification slot: GitHub calls never hold up the next run.
+  await reportFailure(record, env, gh, () => update({}));
   await update({ finishedAt: new Date().toISOString() });
 }

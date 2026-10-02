@@ -138,6 +138,7 @@ test("cleanup refuses a checkout outside workspace storage", async () => {
     const outside = join(f.root, "outside");
     jj(f.repo, ["workspace", "add", "--name", "outside", outside]);
     await writeFile(join(outside, "outside.txt"), "outside\n");
+    jj(outside, ["describe", "-m", "Add outside"]);
     assert.equal((await landWorkspace(outside, { onProgress: () => {} })).ok, true);
     assert.equal(await withinWorkspaceStorage(outside), false);
     assert.deepEqual(await cleanupLandedWorkspace(outside), { cleaned: false, reason: "outside-workspace-storage" });

@@ -13,6 +13,7 @@ import { runWorkspaceCommand } from "./workspace-command.mjs";
 import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { describePostLandFailure, latestPostLandResult, startPostLandVerification } from "./post-land-verification.mjs";
+import { githubRepository, originatingIssue } from "./post-land-issue.mjs";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -581,11 +582,10 @@ async function ensureLandingDescription(cwd, context, target) {
     ? await issueTitle(context.integration.root, issueNumber)
     : null;
   const taskDescription = typeof metadata?.task === "string" ? metadata.task.trim() : "";
-  const description = (
-    issueDescription?.trim() ||
-    taskDescription ||
-    `Land ${context.current.name}`
-  ).slice(0, 500);
+  const description = (issueDescription?.trim() || taskDescription).slice(0, 500);
+  // A post-land failure Issue carries this description; a placeholder would carry nothing.
+  if (!description)
+    throw new Error(`Landing needs a description of the change: run \`jj describe -r ${target.changeId} -m "<what this change does>"\` and land again`);
   await jj(cwd, ["describe", "-r", target.changeId, "-m", description]);
   return revisionFacts(cwd, target.changeId);
 }
@@ -657,6 +657,20 @@ async function landInSlot(cwd, context, remote, options) {
   return { ...result, ...completed };
 }
 
+/** What a post-land failure Issue needs, read while the workspace and its metadata exist. */
+async function postLandLandingContext(cwd, context, result) {
+  const description = (await jj(cwd, ["--ignore-working-copy", "log", "-r", result.artifact.commitId, "--no-graph", "-T", "description"])
+    .catch(() => result.artifact.description ?? "")).trim();
+  const metadata = context.current.name === "default" ? null : await workspaceMetadata(context.current.name);
+  const remotes = await jj(cwd, ["--ignore-working-copy", "git", "remote", "list"]).catch(() => "");
+  const diffStat = await jj(cwd, ["--ignore-working-copy", "diff", "--from", result.base, "--to", result.artifact.commitId, "--stat"]).catch(() => null);
+  return {
+    description, diffStat,
+    originatingIssue: originatingIssue(metadata?.issueNumber, description),
+    repository: githubRepository(remotes, context.configuration.remote),
+  };
+}
+
 /** A fresh integration starts the repository's declared background verification. */
 async function startPostLand(cwd, context, result, runner, environment) {
   const checks = context.configuration.postLandVerification ?? [];
@@ -664,6 +678,7 @@ async function startPostLand(cwd, context, result, runner, environment) {
   try {
     const gitDirectory = await jj(cwd, ["--ignore-working-copy", "git", "root"]);
     const record = await startPostLandVerification({ integrationRoot: context.integration.root, gitDirectory, base: result.base, commit: result.artifact.commitId, checks, runner,
+      landing: await postLandLandingContext(cwd, context, result),
       // The host's command environment, as for the landing's own verification.
       ...(environment ? { env: environment() } : {}) });
     return { postLand: { status: record.status, commit: record.commit, log: record.log } };

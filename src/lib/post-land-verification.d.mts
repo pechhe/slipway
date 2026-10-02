@@ -13,13 +13,29 @@ export type PostLandRecord = {
   log: string;
   failed?: { command: string; exitCode: number | string; tail: string };
   reason?: string;
+  /** Landing context captured at queue time for a failure Issue. */
+  description?: string;
+  diffStat?: string | null;
+  originatingIssue?: number | null;
+  /** GitHub `owner/name`, or null when the repository has no GitHub remote. */
+  repository?: string | null;
+  issue?: PostLandIssue;
 };
+export type PostLandIssue = {
+  status: "opened" | "not_opened";
+  url?: string;
+  reason?: string;
+  link?: { status: "linked" | "not_linked"; originatingIssue: number; reason?: string };
+};
+export type PostLandLanding = Pick<PostLandRecord, "description" | "diffStat" | "originatingIssue" | "repository">;
+export type GhRunner = (args: string[]) => Promise<string>;
 export function postLandRoot(): string;
 export function startPostLandVerification(input: {
   integrationRoot: string; gitDirectory: string; base: string; commit: string; checks: PostLandCheck[];
   runner?: string[];
   env?: NodeJS.ProcessEnv;
+  landing?: PostLandLanding;
 }): Promise<PostLandRecord>;
 export function latestPostLandResult(integrationRoot: string): Promise<PostLandRecord | null>;
 export function describePostLandFailure(record: PostLandRecord | null): string | null;
-export function runPostLandVerification(recordFile: string, env?: NodeJS.ProcessEnv): Promise<void>;
+export function runPostLandVerification(recordFile: string, env?: NodeJS.ProcessEnv, options?: { gh?: GhRunner }): Promise<void>;
