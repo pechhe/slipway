@@ -98,6 +98,8 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
 }): Promise<LandingTail & {
   artifact: LandingRevision; context: WorkspaceContext;
   cleanupPending?: boolean; cleanupError?: string;
+  /** Whether the primary checkout was moved onto the new integration or left in place. */
+  primaryCheckout?: import("./landing-candidate.mjs").PrimaryCheckoutOutcome;
   verification: import("./verification-policy.mjs").VerificationEvidence;
   /** The integration branch tip this landing verified against and advanced; absent when a rerun only republished. */
   base?: string;
@@ -134,4 +136,4 @@ export function workspaceContinuationState(
 export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
 
 export { latestPostLandResult, runPostLandVerification } from "./post-land-verification.mjs";
-export function finishLandedWorkspace(context: import("./landing-candidate.mjs").CandidateContext, state: Record<string, unknown>): Promise<{ cleanupPending: boolean; cleanupError?: string }>;
+export function finishLandedWorkspace(context: import("./landing-candidate.mjs").CandidateContext, state: Record<string, unknown>): Promise<{ cleanupPending: boolean; cleanupError?: string; primaryCheckout?: import("./landing-candidate.mjs").PrimaryCheckoutOutcome }>;

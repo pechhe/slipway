@@ -482,18 +482,6 @@ export async function revisionFacts(cwd, revision) {
   };
 }
 
-async function assertDefaultReady(context) {
-  // Never change files underneath a live Direct checkout writer. A Direct
-  // landing runs from the primary checkout itself and is that single writer.
-  if (context.current.name !== "default") await assertNoForeignPrimaryWriter(context.integration.root);
-  const facts = await revisionFacts(context.integration.root, "@");
-  if (facts.conflict) throw new Error("Canonical checkout has conflicts; preserving both workspaces");
-  if (!facts.empty) throw new Error("Canonical checkout has unintegrated changes; preserve or reconcile them before landing");
-  if (await jj(context.integration.root, ["log", "-r", `parents(@) ~ ::${context.integrationBranch}`, "--no-graph", "-T", "commit_id"]))
-    throw new Error("Canonical checkout has unintegrated ancestry; preserve it before landing");
-  return facts;
-}
-
 export function statePath(workspaceName) {
   return join(STATE_HOME, `${workspaceName}.json`);
 }
@@ -730,7 +718,7 @@ function landOwnedWorkspace(cwd, options) {
 }
 
 const landingIO = {
-  landingPreview, ensureLandingDescription, assertDefaultReady, jj,
+  landingPreview, ensureLandingDescription, assertNoForeignPrimaryWriter, jj,
   assertStackConflictFree, revisionFacts, runVerification, writeLandingState,
   readJsonOptional, statePath,
 };

@@ -16,17 +16,20 @@ function fixture(direct = false) {
   const candidate = { changeId: "change", commitId: "semantic", empty: false, conflict: false, description: "Task" };
   let liveCandidate = candidate;
   let liveBase = "base";
+  let primaryWriter: string | null = null;
   const steps: string[] = [];
   const state: Record<string, unknown> = {};
   const io = {
     landingPreview: async () => ({ context, target: candidate }),
     ensureLandingDescription: async () => candidate,
-    assertDefaultReady: async () => {},
+    assertNoForeignPrimaryWriter: async () => { if (primaryWriter) throw new Error(primaryWriter); },
     assertStackConflictFree: async () => {},
-    revisionFacts: async (_cwd: string, revision: string) => revision === "develop"
-      ? { ...candidate, commitId: liveBase } : liveCandidate,
+    revisionFacts: async (cwd: string, revision: string) => revision === "develop"
+      ? { ...candidate, commitId: liveBase }
+      // The primary checkout is an empty `@` on the old integration tip.
+      : cwd === "/repo" && revision === "@" ? { ...candidate, commitId: "primary", empty: true } : liveCandidate,
     jj: async (_cwd: string, args: string[]) => {
-      if (args[0] === "diff") return "";
+      if (args[0] === "diff" || args[0] === "log") return "";
       steps.push(args[0]!);
       return "";
     },
@@ -51,7 +54,7 @@ function fixture(direct = false) {
       },
     },
   };
-  return { io, options, steps, state, drift: () => { liveBase = "changed"; } };
+  return { io, options, steps, state, drift: () => { liveBase = "changed"; }, directWriter: (message: string) => { primaryWriter = message; } };
 }
 
 for (const direct of [false, true]) test(`shared candidate transition preserves ${direct ? "Direct" : "isolated"} landing order`, async () => {
@@ -61,7 +64,19 @@ for (const direct of [false, true]) test(`shared candidate transition preserves 
   assert.deepEqual(f.steps, ["rebase", "generate", "verify", "bookmark", "new", "new"]);
   assert.equal(result.artifact.commitId, "generated");
   assert.equal(result.cleanupPending, false);
+  assert.deepEqual(result.primaryCheckout, { action: "moved" });
   assert.equal(f.state.phase, direct ? undefined : "landed");
+});
+
+test("a live Direct writer defers the primary checkout move but never the integration", async () => {
+  const f = fixture();
+  f.directWriter("The primary checkout is being written by Direct Pi run");
+  const result = await integrateLandingCandidate("/task", f.options, f.io);
+  assert.deepEqual(f.steps, ["rebase", "generate", "verify", "bookmark"]);
+  assert.equal(f.state.phase, "landed");
+  assert.equal(result.primaryCheckout?.action, "deferred");
+  // Housekeeping stays pending so a later cleanup moves the checkout once the writer ends.
+  assert.equal(result.cleanupPending, true);
 });
 
 test("shared candidate transition refuses integration if verification moves the base", async () => {

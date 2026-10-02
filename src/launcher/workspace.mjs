@@ -16,6 +16,7 @@ import {
   describeRetention,
   retainedWorkspaceMaterial,
   latestPostLandResult,
+  readLandingState,
   runPostLandVerification,
 } from "../lib/peach-workspace.mjs";
 import { landingGuardDecision } from "../lib/landing-guard.mjs";
@@ -34,8 +35,10 @@ try {
   if (command === "status") {
     const context = await workspaceContext();
     const postLand = context ? await latestPostLandResult(context.integration.root) : null;
+    const landing = context && context.current.name !== "default" ? await readLandingState(context.current.name, { readOnly: true }) : null;
     console.log(context
       ? JSON.stringify({ mode: await readWorkspaceMode(), workspace: context.current, integration: context.integration, integrationBranch: context.integrationBranch,
+        ...(landing ? { landing: { phase: landing.phase, artifactCommitId: landing.artifactCommitId, ...(landing.primaryCheckout ? { primaryCheckout: landing.primaryCheckout } : {}) } } : {}),
         ...(postLand ? { postLand: { commit: postLand.commit, status: postLand.status, finishedAt: postLand.finishedAt, log: postLand.log, ...(postLand.failed ? { failed: postLand.failed.command } : {}) } } : {}) }, null, 2)
       : "Not inside a Jujutsu repository");
   } else if (command === "mode") {
@@ -93,6 +96,7 @@ try {
       postLandRunner: [process.execPath, process.argv[1], "post-land-run"],
     });
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
+      ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "post-land-run") {

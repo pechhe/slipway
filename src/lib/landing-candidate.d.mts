@@ -6,6 +6,14 @@ export type CandidateContext = {
   integration: { name: string; root: string };
   integrationBranch: string;
 };
+/** What an Isolated landing did with the primary checkout; it never blocks integration or push. */
+export type PrimaryCheckoutOutcome = {
+  /** `moved` onto the new integration, already `current`, `left` in place, or `deferred` by a live Direct writer. */
+  action: "moved" | "current" | "left" | "deferred";
+  reason?: string;
+  /** Something the primary checkout's owner should resolve, such as a conflict. */
+  warning?: string;
+};
 export type CandidateOptions = {
   adapter?: LandingAdapter;
   localOnly?: boolean;
@@ -17,7 +25,7 @@ export type CandidateOptions = {
 export type LandingIO = {
   landingPreview(cwd: string): Promise<{ context: CandidateContext; target: LandingRevision }>;
   ensureLandingDescription(cwd: string, context: CandidateContext, target: LandingRevision): Promise<LandingRevision>;
-  assertDefaultReady(context: CandidateContext): Promise<unknown>;
+  assertNoForeignPrimaryWriter(integrationRoot: string): Promise<void>;
   assertStackConflictFree(cwd: string, branch: string, changeId: string): Promise<unknown>;
   jj(cwd: string, args: string[]): Promise<string>;
   revisionFacts(cwd: string, revision: string): Promise<LandingRevision>;
@@ -26,5 +34,5 @@ export type LandingIO = {
   readJsonOptional(path: string): Promise<Record<string, unknown>>;
   statePath(name: string): string;
 };
-export function integrateLandingCandidate(cwd: string, options: CandidateOptions, io: LandingIO): Promise<{ context: CandidateContext; artifact: LandingRevision; verification: VerificationEvidence; cleanupPending: boolean; cleanupError?: string }>;
-export function finishLanding(context: WorkspaceContext, state: Record<string, unknown>, options: CandidateOptions, io: LandingIO): Promise<{ cleanupPending: boolean; cleanupError?: string }>;
+export function integrateLandingCandidate(cwd: string, options: CandidateOptions, io: LandingIO): Promise<{ context: CandidateContext; artifact: LandingRevision; verification: VerificationEvidence; cleanupPending: boolean; cleanupError?: string; primaryCheckout?: PrimaryCheckoutOutcome }>;
+export function finishLanding(context: WorkspaceContext, state: Record<string, unknown>, options: CandidateOptions, io: LandingIO): Promise<{ cleanupPending: boolean; cleanupError?: string; primaryCheckout?: PrimaryCheckoutOutcome }>;
