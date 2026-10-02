@@ -5,11 +5,53 @@ Harness-neutral JJ workspace and landing tool. One tagged artifact is both the
 
 slipway was extracted from `pechhe/peach-pi` at `37a32367` (the landing closure in
 `packages/pi-client/src/lib`, its CLI and its tests), with that history preserved.
-Until the later migration releases, it behaves like the `peach-workspace` it came
-from and uses the same state under `~/.pi` (`~/.pi/workspaces`,
-`~/.pi/agent/workspace-state`, `~/.pi/agent/workspace-mode.json`). Since v0.2.0 it
-also reads the neutral repository config and sets the neutral environment names
-described below, alongside the old ones. See [CHANGELOG.md](CHANGELOG.md).
+It behaves like the `peach-workspace` it came from. Since v0.2.0 it also reads the
+neutral repository config and sets the neutral environment names described below,
+alongside the old ones. Since v1.0.0 it keeps its state under `~/.slipway` and
+retires `peach-workspace` (see [State and cutover](#state-and-cutover)). See
+[CHANGELOG.md](CHANGELOG.md).
+
+## State and cutover
+
+| What | Location |
+| --- | --- |
+| Landing state, locks, verification slots, post-land and post-integration records | `~/.slipway/state` |
+| Checkout mode (`slipway mode`) | `~/.slipway/mode.json` |
+| New isolated workspaces | `~/.slipway/workspaces` |
+| Cutover record | `~/.slipway/cutover.json` |
+
+Before v1.0.0 these lived in `~/.pi/agent/workspace-state`,
+`~/.pi/agent/workspace-mode.json` and `~/.pi/workspaces`. On a machine that still
+has that state, every command except `status` and `cutover` refuses, and so does
+the library's state access, until `slipway cutover` has run once. Old and new code
+therefore never write separate lock stores.
+
+`slipway cutover`:
+
+1. Refuses, naming each holder, while any landing transaction, verification slot
+   (or a landing waiting for one), Direct primary-checkout writer, post-land run or
+   post-integration run is held or live. Nothing changes.
+2. Moves `~/.pi/agent/workspace-state` to `~/.slipway/state` and the mode file to
+   `~/.slipway/mode.json`, by rename, or across devices by copy, verify, then delete.
+   Workspaces stay where they are: those under `~/.pi/workspaces` keep working at
+   their recorded paths, through landing and cleanup.
+3. Replaces `~/.pi/agent/bin/peach-workspace` and `~/.pi/agent/lib/peach-workspace.mjs`,
+   where they exist, with stubs. The CLI stub prints the `slipway` command to run and
+   exits 1. The library stub throws on import, naming `@pechhe/slipway`.
+4. Writes `~/.slipway/cutover.json`. Running `slipway cutover` again is a no-op.
+
+`slipway cutover --check` reports what would block or move without changing
+anything.
+
+The library stub stops anything that still imports
+`~/.pi/agent/lib/peach-workspace.mjs`: today that is Pi's installed `pi` launcher
+and its `jj-workspace` extension, which fail at startup with the stub's message.
+Re-running peach-pi's `bun run install:vanilla-pi` rewrites the stubs as shims that
+delegate to the globally installed slipway. That is safe once the global install
+is v1.0.0 or later, because the shims then share `~/.slipway`. peach-pi stops
+writing the shims once Pi imports slipway directly. Cut over every machine that
+runs workspaces, and never sync `~/.slipway/state` or `~/.slipway/workspaces`
+between machines: they are per-machine lock stores.
 
 ## Repository config
 
@@ -40,19 +82,19 @@ Releases are git tags. Nothing is published to npm. The unscoped `slipway` name
 there belongs to an unrelated package.
 
 ```sh
-bun add -g github:pechhe/slipway#v0.2.1
+bun add -g github:pechhe/slipway#v1.0.0
 slipway status
 ```
 
 The repository is public, so the `github:` tag form needs no authentication.
 
-`slipway` is installed beside `peach-workspace` and leaves `~/.pi/agent/bin` and
-`~/.pi/agent/lib` alone.
+Installing leaves `~/.pi/agent` alone. Only `slipway cutover` replaces the old
+`peach-workspace` entry points there.
 
 ## CLI
 
 `slipway <command>` offers every `peach-workspace` command with the same behaviour,
-plus what a Claude Code `WorktreeCreate`/`WorktreeRemove` hook needs without library
+plus `cutover` and what a Claude Code `WorktreeCreate`/`WorktreeRemove` hook needs without library
 imports (`start --integration --issue <n> --json`, `remove <path>`):
 
 | Command | Effect |
@@ -70,6 +112,7 @@ imports (`start --integration --issue <n> --json`, `remove <path>`):
 | `cleanup [path]` | Remove the current (or given) workspace once it has landed. |
 | `remove <path>` | Remove the workspace at `path` if it has landed or is untouched; otherwise keep it and exit 1. |
 | `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). |
+| `cutover [--check]` | Move pre-v1.0.0 state to `~/.slipway` once and retire `peach-workspace` (see [State and cutover](#state-and-cutover)). |
 
 ## Library
 
@@ -84,12 +127,13 @@ finalization, plus the process and text utilities that hosts share. Other
 modules under `src/lib` are internal, and `bun run check` enforces that the
 `src/` closure imports only itself, Node built-ins, `effect` and `proper-lockfile`,
 with no cycles. A host that brokers child processes injects its broker with
-`setProcessBroker`.
+`setProcessBroker`. Before the cutover, any library call that reads or writes
+state rejects with an error whose `code` is `SLIPWAY_CUTOVER_REQUIRED`;
+`cutoverPending()` reports that state and `cutover()` runs the cutover.
 
 ## Development and landing
 
-slipway lands its own changes through `slipway land` (or the installed
-`peach-workspace land`) from an isolated JJ workspace, under its own
+slipway lands its own changes through `slipway land` from an isolated JJ workspace, under its own
 `.peach/execution.json`. That file keeps the legacy name until the installed
 landing tools all read `slipway.json`, because a v0.1.0 or `peach-workspace`
 landing reads only the legacy path.
@@ -104,5 +148,6 @@ landing reads only the legacy path.
 
 Every Vitest file runs under its own disposable `HOME`
 (`scripts/vitest-hermetic-env.mjs`). `scripts/hermetic-home-guard.mjs` fails a test
-that would otherwise write the real `~/.pi`. Run a single file with
+that would otherwise write the real `~/.slipway` or `~/.pi`. The cutover tests build
+pre-v1.0.0 state in that disposable `HOME` and never touch the real one. Run a single file with
 `bunx vp test tests/<file>.test.ts`.

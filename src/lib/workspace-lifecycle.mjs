@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { artifactPublished, finishLandedWorkspace, publicationRemote } from "./landing-steps.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
-import { metadataHome, poolRefillLogPath, stateHome, workspaceHome } from "./workspace-paths.mjs";
+import { metadataHome, poolRefillLogPath, stateHome, workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import { landingStatePaths, listWorkspaces, lockPath, metadataPath, readLandingState, renameWorkspace, workspaceMetadata } from "./workspace-state.mjs";
 import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
 import { installInputFingerprint } from "./install-inputs.mjs";
@@ -240,7 +240,7 @@ async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   const superseded = !external.ok && external.status === "failed" && published && publicationRemote(context, state.localOnly) !== null;
   if (!external.ok && !superseded) return { cleaned: false, reason: `post-integration-${external.status}` };
   if (!published) return { cleaned: false, reason: "not-published" };
-  // Cleanup deletes only checkouts beneath Peach workspace storage.
+  // Cleanup deletes only checkouts beneath slipway workspace storage.
   if (!await withinWorkspaceStorage(context.current.root)) return { cleaned: false, reason: "outside-workspace-storage" };
   await archiveIntegratedWorkspaceEvidence(gitDirectory, state);
   await retireWorkspace(context.integration.root, context.current, hooks);
@@ -260,7 +260,7 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
     const target = (await listWorkspaces(cwd)).find((workspace) => workspace.name === workspaceName);
     if (!target?.root) throw new Error(`Unknown or unavailable JJ workspace: ${workspaceName}`);
     if (!await withinWorkspaceStorage(target.root))
-      throw new Error("Refusing to remove a workspace outside ~/.pi/workspaces");
+      throw new Error("Refusing to remove a workspace outside ~/.slipway/workspaces and ~/.pi/workspaces");
     const metadata = await workspaceMetadata(workspaceName);
     const hasWork = await workspaceHasUnintegratedWork(target.root, context.integrationBranch).catch(
       () => true,
@@ -278,13 +278,14 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
   });
 }
 
-/** Whether a checkout lives beneath Peach workspace storage, the only place cleanup deletes. */
+/**
+ * Whether a checkout lives beneath slipway workspace storage (`~/.slipway/workspaces`,
+ * or `~/.pi/workspaces` for one created before the cutover), the only places cleanup deletes.
+ */
 export async function withinWorkspaceStorage(root) {
-  const [storage, target] = await Promise.all([
-    realpath(workspaceHome()).catch(() => resolve(workspaceHome())),
-    realpath(root).catch(() => resolve(root)),
-  ]);
-  return target.startsWith(storage + "/");
+  const canonical = (path) => realpath(path).catch(() => resolve(path));
+  const [target, ...storage] = await Promise.all([root, ...workspaceStorageHomes()].map(canonical));
+  return storage.some((home) => target.startsWith(home + "/"));
 }
 
 /** Unregister a workspace from JJ and delete its checkout, through the host's guarded forget when given. */

@@ -20,7 +20,10 @@ import {
   runPostLandVerification,
   removeWorkspace,
   startSpareRefill,
+  cutover,
+  cutoverPending,
 } from "../lib/peach-workspace.mjs";
+import { legacyStateHome } from "../lib/workspace-paths.mjs";
 import { landingGuardDecision } from "../lib/landing-guard.mjs";
 import { landingTimingLine } from "../lib/landing-timing.mjs";
 import { execFileSync, spawn } from "node:child_process";
@@ -118,10 +121,38 @@ async function removeWorkspaceAt(path) {
   return 1;
 }
 
+/** `cutover [--check]`: move pre-v1.0.0 state to ~/.slipway once, or only report whether it would. */
+async function runCutover(args) {
+  if (args.some((flag) => flag !== "--check")) throw new Error("Usage: slipway cutover [--check]");
+  const result = await cutover({ check: args.includes("--check") });
+  if (result.status === "refused") {
+    console.error(`Refusing the cutover while ${result.holders.length === 1 ? "this holds" : "these hold"} slipway state; wait for ${result.holders.length === 1 ? "it" : "them"} to finish, then rerun:`);
+    for (const holder of result.holders) console.error(`  - ${holder}`);
+  }
+  if (result.status === "already-cut-over" && result.reappeared) {
+    console.error(`Old-location state exists again (${result.reappeared.join(", ")}): something running pre-v1.0.0 code wrote it after the cutover. slipway ignores it; stop that process.`);
+  }
+  console.log(JSON.stringify(result, null, 2));
+  return result.status === "refused" ? 1 : 0;
+}
+
 const [command, ...rest] = process.argv.slice(2);
 
 try {
-  if (command === "status") {
+  if (command !== "status" && command !== "cutover" && cutoverPending()) {
+    // Before the cutover, only `status` and `cutover` run: anything else would start a second lock store.
+    console.error(`slipway ${command ?? ""}`.trim() + ` refused: this machine's slipway state still lives under ${legacyStateHome()}. `
+      + "Run `slipway cutover` once while nothing is landing (`slipway cutover --check` reports what holds it), then retry.");
+    process.exitCode = 1;
+  } else if (command === "cutover") {
+    process.exitCode = await runCutover(rest);
+  } else if (command === "status" && cutoverPending()) {
+    const context = await workspaceContext();
+    console.log(JSON.stringify({
+      cutover: { required: true, legacyState: legacyStateHome(), command: "slipway cutover" },
+      ...(context ? { workspace: context.current, integration: context.integration, integrationBranch: context.integrationBranch } : {}),
+    }, null, 2));
+  } else if (command === "status") {
     const context = await workspaceContext();
     const postLand = context ? await latestPostLandResult(context.integration.root) : null;
     const landing = context && context.current.name !== "default" ? await readLandingState(context.current.name, { readOnly: true }) : null;
@@ -147,7 +178,7 @@ try {
       console.log(`${workspace.name}\t${workspace.root}\t${state}${issue}${kept}`);
     }
   } else if (command === "prune") {
-    if (rest[0] !== "--empty") throw new Error("Usage: peach-workspace prune --empty");
+    if (rest[0] !== "--empty") throw new Error("Usage: slipway prune --empty");
     const result = await pruneEmptyWorkspaces();
     for (const name of result.removed) console.log(`Removed empty workspace: ${name}`);
     for (const skipped of result.skipped) console.error(`Skipped ${skipped.name}: ${skipped.reason}`);
@@ -157,7 +188,7 @@ try {
     else if (rest.length === 0) {
       const spares = await readySpares(process.cwd());
       console.log(spares.length ? spares.map((spare) => `ready\t${spare.name}\t${spare.root}`).join("\n") : "No ready spare workspace.");
-    } else throw new Error("Usage: peach-workspace pool [refill]");
+    } else throw new Error("Usage: slipway pool [refill]");
   } else if (command === "attach-issue") {
     const issueNumber = Number(rest[0]);
     const result = await attachWorkspaceIssue(process.cwd(), issueNumber);
@@ -165,7 +196,7 @@ try {
   } else if (command === "start") {
     const options = startOptions(rest);
     if (!options) {
-      console.error('Usage: peach-workspace start [--integration] [--issue <n>] [--refill] [--json] ["task"]');
+      console.error('Usage: slipway start [--integration] [--issue <n>] [--refill] [--json] ["task"]');
       process.exitCode = 2;
     } else if (options.json && options.resultFd === undefined) {
       process.exitCode = await startForJson(rest);
@@ -189,7 +220,7 @@ try {
     const preview = await landingPreview();
     console.log(preview.stat || "(no changed files)");
   } else if (command === "land") {
-    if (rest.some((flag) => flag !== "--local-only" && flag !== "--direct")) throw new Error("Usage: peach-workspace land [--local-only] [--direct]");
+    if (rest.some((flag) => flag !== "--local-only" && flag !== "--direct")) throw new Error("Usage: slipway land [--local-only] [--direct]");
     // --direct lands the primary checkout itself, for a session explicitly working Direct.
     const timing = { startedAt: Date.now(), stages: [] };
     const result = await landWorkspace(process.cwd(), {
@@ -217,16 +248,16 @@ try {
     const decision = await landingGuardDecision(input.trim() ? JSON.parse(input) : {});
     if (decision) console.log(JSON.stringify(decision));
   } else if (command === "cleanup") {
-    if (rest.length > 1 || rest[0]?.startsWith("-")) throw new Error("Usage: peach-workspace cleanup [path]");
+    if (rest.length > 1 || rest[0]?.startsWith("-")) throw new Error("Usage: slipway cleanup [path]");
     const result = await cleanupLandedWorkspace(rest[0] ? resolve(rest[0]) : process.cwd());
     console.log(result.cleaned ? "Workspace removed." : `Workspace retained: ${describeRetention(result)}.`);
     const superseded = result.supersededPostIntegration;
     if (superseded) console.log(`Superseded post-integration record (${superseded.status}, attempt ${superseded.attempt}${superseded.reason ? `: ${superseded.reason}` : ""}): a later landing published this artifact.`);
   } else if (command === "remove") {
-    if (rest.length !== 1 || rest[0].startsWith("-")) throw new Error("Usage: peach-workspace remove <path>");
+    if (rest.length !== 1 || rest[0].startsWith("-")) throw new Error("Usage: slipway remove <path>");
     process.exitCode = await removeWorkspaceAt(resolve(rest[0]));
   } else {
-    console.error("Usage: peach-workspace <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|cleanup [path]|remove <path>>");
+    console.error("Usage: slipway <status|mode|list|pool [refill]|prune --empty|attach-issue|start|preview|land|cleanup [path]|remove <path>|cutover [--check]>");
     process.exitCode = 2;
   }
 } catch (error) {

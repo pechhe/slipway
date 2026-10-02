@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vite-plus/test";
 import { acquirePrimaryWriter, activePrimaryWriter, assertNoForeignPrimaryWriter, primaryWriterName, releasePrimaryWriter } from "../src/lib/primary-checkout-writer.mjs";
+import { lockHome } from "../src/lib/workspace-paths.mjs";
 
 test("Direct checkout protection still admits one writer and serialises with integration", async () => {
   const root = await mkdtemp(join(tmpdir(), "peach-primary-writer-"));
@@ -22,7 +23,7 @@ test("Direct checkout protection still admits one writer and serialises with int
     await release();
     assert.equal(await activePrimaryWriter(repo), null);
     await assertNoForeignPrimaryWriter(repo);
-    const stale = join(homedir(), ".pi", "agent", "workspace-state", "locks", `${await primaryWriterName(repo)}.json`);
+    const stale = join(lockHome(), `${await primaryWriterName(repo)}.json`);
     await writeFile(stale, JSON.stringify({ version: 1, pid: 2_147_483_646, owner: "thread:dead", surface: "local" }));
     await acquirePrimaryWriter({ integrationRoot: repo, integrationBranch: "main", owner: "thread:c", surface: "local" });
     assert.equal((await activePrimaryWriter(repo))?.owner, "thread:c");

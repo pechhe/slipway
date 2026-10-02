@@ -43,7 +43,7 @@ test("start --json prints only the result while install output goes to stderr, a
     const created = JSON.parse(first.stdout);
     assert.equal(first.stdout, `${JSON.stringify(created)}\n`, "stdout is exactly one JSON line");
     assert.match(first.stderr, /\[deps\] bun install/);
-    const workspaces = await realpath(join(homedir(), ".pi", "workspaces"));
+    const workspaces = await realpath(join(homedir(), ".slipway", "workspaces"));
     assert.ok(created.workspacePath.startsWith(`${workspaces}/`), created.workspacePath);
     assert.equal(created.integrationRoot, f.repo);
     assert.deepEqual({ issueNumber: created.issueNumber, created: created.created, reused: created.reused }, { issueNumber: 7, created: true, reused: false });
@@ -66,7 +66,7 @@ test("start rejects an unknown flag, a missing task and an invalid Issue number"
     for (const args of [["start", "--bogus", "task"], ["start"], ["start", "--json"], ["start", "--issue", "x"]]) {
       const run = await slipway(f.repo, args);
       assert.equal(run.code, 2, args.join(" "));
-      assert.match(run.stderr, /Usage: peach-workspace start/);
+      assert.match(run.stderr, /Usage: slipway start/);
     }
   } finally {
     await f.dispose();

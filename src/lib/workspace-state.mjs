@@ -11,8 +11,10 @@ import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transa
  */
 
 export async function readWorkspaceMode() {
+  // Resolved outside the fallback, so a pending cutover refuses instead of reading as "isolated".
+  const path = modePath();
   try {
-    const parsed = JSON.parse(await readFile(modePath(), "utf8"));
+    const parsed = JSON.parse(await readFile(path, "utf8"));
     return parsed.mode === "direct" ? "direct" : "isolated";
   } catch {
     return "isolated";

@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.0.0
+
+State moves to `~/.slipway`, and `peach-workspace` is retired (pechhe/peach-pi#1000).
+
+- **Locations:** landing state, locks and verification slots live in
+  `~/.slipway/state` (was `~/.pi/agent/workspace-state`), the checkout mode in
+  `~/.slipway/mode.json` (was `~/.pi/agent/workspace-mode.json`), and new
+  workspaces in `~/.slipway/workspaces` (was `~/.pi/workspaces`).
+- **`slipway cutover [--check]`:** moves this machine's old state once. It refuses,
+  naming each holder, while a landing transaction, verification slot or waiting
+  landing, Direct writer, post-land run or post-integration run is live. Otherwise
+  it renames the state and mode file (copy, verify, delete across devices), replaces
+  the installed `~/.pi/agent/bin/peach-workspace` and
+  `~/.pi/agent/lib/peach-workspace.mjs` with refusing stubs, and records
+  `~/.slipway/cutover.json`. Running it again is a no-op. `--check` only reports.
+- **Hard stop before cutover:** on a machine with old-location state and no
+  cutover record, every command except `status` and `cutover` refuses, and library
+  state access rejects with code `SLIPWAY_CUTOVER_REQUIRED`. `status` reports
+  `cutover.required`.
+- **Existing workspaces:** those under `~/.pi/workspaces` stay usable at their
+  recorded paths, including Issue resume, landing, `cleanup` and `remove`.
+- **Messages:** usage, the landing guard and cleanup hints name `slipway` instead
+  of `peach-workspace`.
+- **Breaking for Pi:** after the cutover, Pi's installed `pi` launcher and
+  `jj-workspace` extension, which import `~/.pi/agent/lib/peach-workspace.mjs`,
+  fail at startup with the stub's message. Re-running peach-pi's
+  `install:vanilla-pi` restores them with shims to the global slipway.
+- **Not changed:** the `slipway.json`/`.peach/execution.json` and
+  `SLIPWAY_*`/`PEACH_*` dual-read stays until a later release.
+
 ## v0.2.1
 
 Ports pechhe/peach-pi#1003 (`92090ecc4`), which landed in peach-pi after the

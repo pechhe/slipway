@@ -118,7 +118,7 @@ test("cleanup releases a failed landing only once a later landing has published 
     const retry = await land(workspace.workspacePath);
     assert.equal(retry.ok, false);
     assert.equal(retry.postIntegration.reason, "Historical migration policy changed or is not recoverable");
-    assert.match(retry.publication.reason ?? "", /already published .* run `peach-workspace cleanup`/);
+    assert.match(retry.publication.reason ?? "", /already published .* run `slipway cleanup`/);
 
     assert.deepEqual(await cleanupLandedWorkspace(workspace.workspacePath), { cleaned: true,
       supersededPostIntegration: { status: "failed", attempt: 2, reason: "Historical migration policy changed or is not recoverable" } });

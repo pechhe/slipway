@@ -3,7 +3,7 @@ import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { parseWorkspaceList, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext, workspaceSlug } from "./workspace-jj.mjs";
-import { workspaceHome } from "./workspace-paths.mjs";
+import { workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import {
   assertIssueAvailable,
   assertWorkspaceMutationAllowed,
@@ -106,7 +106,7 @@ async function forgetSafeMissingIssueWorkspace(cwd, workspace, issueNumber, hook
     : workspace.root || join(workspaceHome(), workspace.name);
   // The checkout is gone, so storage containment is checked lexically, not through realpath.
   const normalizedPath = resolve(recordedPath);
-  if (!normalizedPath.startsWith(`${resolve(workspaceHome())}${sep}`)) {
+  if (!workspaceStorageHomes().some((home) => normalizedPath.startsWith(`${resolve(home)}${sep}`))) {
     throw new Error(`${label} has an unsafe stale path; preserve it for explicit recovery`);
   }
   await forgetWorkspace(context.integration.root, workspace.name, normalizedPath, hooks);

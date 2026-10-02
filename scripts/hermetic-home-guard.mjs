@@ -1,5 +1,5 @@
-// Tests must never write the developer's real Pi/Peach state (for example
-// ~/.pi/agent/workspace-state/post-land). `homedir()` follows HOME, but the
+// Tests must never write the developer's real slipway or Pi state (for example
+// ~/.slipway/state/post-land, or ~/.pi during a cutover test). `homedir()` follows HOME, but the
 // account's home comes from the user database, so a test whose HOME was not
 // isolated (a runner without the hermetic setup, or a runtime that fixes
 // homedir() at startup) is caught before it writes anything.

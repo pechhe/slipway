@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "vite-plus/test";
 import { createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
 import { referencesIssue, withIssueTrailer } from "../src/lib/post-land-issue.mjs";
+import { metadataHome } from "../src/lib/workspace-paths.mjs";
 import { jj, project } from "./support/workspace-project.ts";
 
 const remoteMessage = (remote: string) => execFileSync("git", ["--git-dir", remote, "log", "-1", "--format=%B", "main"], { encoding: "utf8" }).trim();
@@ -67,7 +67,7 @@ test("a landing without an Issue adds no trailer", async () => {
 
 test("a Direct landing records the Issue named by the primary checkout's metadata", async () => {
   const f = await project();
-  const directory = join(homedir(), ".pi", "agent", "workspace-state", "workspaces");
+  const directory = metadataHome();
   try {
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "default.json"), JSON.stringify({ version: 1, workspaceName: "default", issueNumber: 96603 }));

@@ -47,6 +47,7 @@ test("ordinary work and feature-branch publication are allowed", () => {
     "jj bookmark set feature/login -r @",
     "jj bookmark list",
     "peach-workspace land",
+    "slipway land",
     "gh pr create --fill",
     "gh pr view 12",
   ]) assert.equal(landingBypass(line, branches), null, line);
@@ -81,7 +82,7 @@ test("the hook decision applies only to Bash in a governed repository", async ()
     const push = (cwd: string, command: string) => landingGuardDecision({ tool_name: "Bash", cwd, tool_input: { command } });
     const denied = await push(governed, "jj git push -b develop");
     assert.equal(denied?.hookSpecificOutput.permissionDecision, "deny");
-    assert.match(denied!.hookSpecificOutput.permissionDecisionReason, /peach-workspace land/);
+    assert.match(denied!.hookSpecificOutput.permissionDecisionReason, /slipway land/);
     assert.equal(await push(governed, "jj git push -b master"), null, "only the declared integration branch is guarded");
     assert.equal(await push(root, "git push"), null, "an ungoverned repository is untouched");
     assert.equal(await landingGuardDecision({ tool_name: "Read", cwd: governed, tool_input: { file_path: "x" } }), null);

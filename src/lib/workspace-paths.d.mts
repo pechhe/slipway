@@ -1,0 +1,22 @@
+/** Declarations of the landing tool's filesystem locations; see workspace-paths.mjs. */
+export function slipwayHome(): string;
+export function cutoverMarkerPath(): string;
+export function legacyAgentHome(): string;
+export function legacyStateHome(): string;
+export function legacyModePath(): string;
+export function legacyWorkspaceHome(): string;
+export function legacyEntryPoints(): { cli: string; library: string };
+export const CUTOVER_REQUIRED_CODE: "SLIPWAY_CUTOVER_REQUIRED";
+export function cutoverPending(): boolean;
+export function assertCutoverSettled(): void;
+export function workspaceHome(): string;
+export function workspaceStorageHomes(): string[];
+export function modePath(): string;
+export function stateHome(): string;
+export function lockHome(): string;
+export function metadataHome(): string;
+export function landedHome(): string;
+export function transactionHome(): string;
+export function postLandHome(): string;
+export function postIntegrationHome(): string;
+export function poolRefillLogPath(): string;

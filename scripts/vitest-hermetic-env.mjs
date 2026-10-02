@@ -1,7 +1,7 @@
-// Every Vitest file gets its own disposable HOME. Peach and Pi derive durable
-// workspace, lock and session state from `homedir()`, so a suite running with
-// the developer's real HOME both pollutes ~/.pi and contends with the live
-// Pi/Peach sessions that own it (observed as 120-180s conformance hangs).
+// Every Vitest file gets its own disposable HOME. slipway, Peach and Pi derive
+// durable workspace, lock and session state from `homedir()`, so a suite running
+// with the developer's real HOME both pollutes ~/.slipway and ~/.pi and contends
+// with the live sessions that own them (observed as 120-180s conformance hangs).
 // This runs before the test file's imports, so module-level `homedir()`
 // constants and spawned fixture processes both see the isolated value.
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";

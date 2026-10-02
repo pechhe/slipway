@@ -3,7 +3,7 @@
  * `postLandVerification` commands that are too slow to block every landing. Land
  * starts them after integration, against an exact-revision source view, without
  * holding the landing slot. The outcome is a record that the next landing and
- * `peach-workspace status` report; it never changes the landed integration.
+ * `slipway status` report; it never changes the landed integration.
  */
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";

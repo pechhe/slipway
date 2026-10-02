@@ -3,15 +3,15 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vite-plus/test";
 import { cleanupLandedWorkspace, createWorkspace, findIssueWorkspace, landWorkspace, renameWorkspace } from "../src/lib/peach-workspace.mjs";
 import { statePath, workspaceMetadata } from "../src/lib/workspace-state.mjs";
 import { withinWorkspaceStorage } from "../src/lib/workspace-lifecycle.mjs";
+import { landedHome, metadataHome } from "../src/lib/workspace-paths.mjs";
 
-const landedPath = (name: string) => join(homedir(), ".pi", "agent", "workspace-state", "landed", `${name}.json`);
+const landedPath = (name: string) => join(landedHome(), `${name}.json`);
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 
 const cli = fileURLToPath(new URL("../src/launcher/workspace.mjs", import.meta.url));
@@ -178,7 +178,7 @@ async function issueWorkspace(f: Awaited<ReturnType<typeof project>>, issueNumbe
   return { workspace, dispose: () => rm(workspace.workspacePath, { recursive: true, force: true }) };
 }
 const head = (cwd: string) => jj(cwd, ["log", "-r", "@", "--no-graph", "-T", 'change_id ++ " " ++ commit_id']);
-const metadataFile = (name: string) => join(homedir(), ".pi", "agent", "workspace-state", "workspaces", `${name}.json`);
+const metadataFile = (name: string) => join(metadataHome(), `${name}.json`);
 
 test("the CLI starts a workspace with the Git author and a creation record", async () => {
   const f = await project();

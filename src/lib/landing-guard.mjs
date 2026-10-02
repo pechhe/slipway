@@ -1,14 +1,14 @@
 /**
  * A Claude Code PreToolUse guard: in a repository governed by `slipway.json` (or the
  * legacy `.peach/execution.json`),
- * the integration branch moves and is published only through `peach-workspace land`.
+ * the integration branch moves and is published only through `slipway land`.
  * Pushing feature bookmarks for a pull request stays allowed.
  */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EXECUTION_POLICY_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
-const LAND = "Use `peach-workspace land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
+const LAND = "Use `slipway land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
 
 /** Nearest policy above `cwd` (`slipway.json` before the legacy path), with its integration branches; null when ungoverned. */
 export async function governedBranches(cwd) {

@@ -1,10 +1,10 @@
 /**
- * The landing tool's one public entry. Every consumer outside this directory
- * imports only from here: the desktop through `@peach-pi/pi-client/delivery`,
- * the Pi launcher, the jj-workspace extension and the Claude Code hooks by path
- * (the installed bundle is `~/.pi/agent/lib/peach-workspace.mjs`). The closure
- * behind it is self-contained and acyclic; `bun run check:architecture` enforces
- * both, and that nothing else imports a module here directly.
+ * The landing tool's one public entry (`@pechhe/slipway`). Every consumer
+ * outside this directory imports only from here: the desktop through its pinned
+ * tag, the Pi launcher and jj-workspace extension (until `slipway cutover`,
+ * through the `~/.pi/agent/lib/peach-workspace.mjs` shim). The closure behind it
+ * is self-contained and acyclic; `bun run check` enforces both, and that nothing
+ * else imports a module here directly.
  */
 
 // Workspaces: context, assignment, state and housekeeping (launcher, extension, CLI, hooks, desktop).
@@ -23,6 +23,10 @@ export { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 export { acquirePrimaryWriter, activePrimaryWriter, releasePrimaryWriter } from "./primary-checkout-writer.mjs";
 export { LANDED_WORKSPACE_REFUSAL, assertWorkspaceNotRetired, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 export { assertCompletedIssueDelivered, selectImplementationIssue } from "./issue-eligibility.mjs";
+
+// The one-time move of pre-v1.0.0 state from ~/.pi to ~/.slipway (CLI, hosts that report it).
+export { cutover } from "./cutover.mjs";
+export { cutoverPending } from "./workspace-paths.mjs";
 
 // Landing and its verification (CLI, extension, desktop delivery).
 export { assertWorkspaceDelivered, landWorkspace, prepareWorkspaceContinuation } from "./workspace-landing.mjs";

@@ -17,6 +17,10 @@ export { acquirePrimaryWriter, activePrimaryWriter, releasePrimaryWriter } from 
 export { LANDED_WORKSPACE_REFUSAL, assertWorkspaceNotRetired, cleanupRetentionReason, workspaceContinuationDisposition } from "./workspace-delivery-lifecycle.mjs";
 export { assertCompletedIssueDelivered, selectImplementationIssue } from "./issue-eligibility.mjs";
 
+// The one-time move of pre-v1.0.0 state from ~/.pi to ~/.slipway (CLI, hosts that report it).
+export { cutover } from "./cutover.mjs";
+export { cutoverPending } from "./workspace-paths.mjs";
+
 // Landing and its verification (CLI, extension, desktop delivery).
 export { assertWorkspaceDelivered, landWorkspace, prepareWorkspaceContinuation } from "./workspace-landing.mjs";
 export { landingPreview } from "./landing-steps.mjs";

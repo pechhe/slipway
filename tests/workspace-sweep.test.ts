@@ -123,7 +123,7 @@ test("start with a flag prints usage and creates no workspace", async () => {
           resolveExit({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, stderr }));
       });
       assert.equal(exit.code, 2);
-      assert.match(exit.stderr, /Usage: peach-workspace start/);
+      assert.match(exit.stderr, /Usage: slipway start/);
     }
     assert.deepEqual(names(f.repo), ["default"]);
     assert.equal(await readFile(join(f.repo, "README.md"), "utf8"), "fixture\n");

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // The detached spare-pool refill (`startSpareRefill`): prepares one spare for the
 // integration root given as the only argument and writes one line per outcome to
-// its log. It is a closure entry beside workspace-lifecycle.mjs, and the build
-// installs it beside the bundled lib/peach-workspace.mjs.
+// its log. It is a closure entry beside workspace-lifecycle.mjs.
 import { provisionSpare } from "./workspace-lifecycle.mjs";
 
 const root = process.argv[2];
