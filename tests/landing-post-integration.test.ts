@@ -19,7 +19,8 @@ function finalization(ledger: string, failFirst = false) {
   const source = `const fs=require("node:fs");
 if (${failFirst} && !fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, ""); process.exit(9); }
 const e = process.env;
-const both = (name) => e["SLIPWAY_FINALIZATION_" + name] === e["PEACH_FINALIZATION_" + name] ? e["SLIPWAY_FINALIZATION_" + name] : "mismatch";
+// Only the slipway names are set; the retired PEACH_FINALIZATION_* names are not.
+const both = (name) => e["PEACH_FINALIZATION_" + name] === undefined ? e["SLIPWAY_FINALIZATION_" + name] : "retired-name-set";
 if (!both("KEY") || both("TARGET") !== "fixture-development-db") process.exit(8);
 fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: both("COMMIT"), landed: fs.existsSync("landed.txt") }) + "\\n");`;
   return {
@@ -32,11 +33,11 @@ fs.appendFileSync(${JSON.stringify(ledger)}, JSON.stringify({ commit: both("COMM
 const primaryRef = (f: Fixture) => execFileSync("git", ["--git-dir", join(f.repo, ".git"), "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
 const ledgerEntries = async (ledger: string) => (await readFile(ledger, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 
-async function shallowProject(failFirst = false, policyPath?: "slipway.json") {
+async function shallowProject(failFirst = false) {
   // Outside the project, so the policy can name it before the project exists.
   const external = await mkdtemp(join(tmpdir(), "peach-finalization-target-"));
   const ledger = join(external, "ledger.jsonl");
-  const created = await project({ shallow: true, postIntegration: finalization(ledger, failFirst), policyPath });
+  const created = await project({ shallow: true, postIntegration: finalization(ledger, failFirst) });
   const f = { ...created, dispose: async () => { await Promise.all([created.dispose(), rm(external, { recursive: true, force: true })]); } };
   await access(join(f.repo, ".git", "shallow"));
   await writeFile(join(f.repo, "local.txt"), "unlanded\n");
@@ -86,19 +87,19 @@ test("rerunning an integrated but unpublished landing finalizes and publishes wi
   }
 }, 240_000);
 
-test("a policy committed as slipway.json governs landing and finalization at the exact commit", async () => {
-  const { f, ledger, workspace } = await shallowProject(false, "slipway.json");
+test("a repository governed only by the retired .peach/execution.json is refused, naming slipway.json", async () => {
+  const f = await project({ policyPath: ".peach/execution.json" });
   try {
-    const result = await land(workspace.workspacePath);
-    assert.equal(result.ok, true, JSON.stringify({ postIntegration: result.postIntegration, publication: result.publication }));
-    assert.equal(result.postIntegration.status, "complete");
-    assert.equal(result.publication.status, "pushed");
-    assert.deepEqual(await ledgerEntries(ledger), [{ commit: result.artifact.commitId, landed: true }]);
-    assert.match(f.remoteFile("slipway.json"), /fixture-development-db/);
+    const workspace = await createWorkspace("retired policy", f.repo).catch((error: Error) => error);
+    const outcome = workspace instanceof Error ? workspace
+      : await writeFile(join(workspace.workspacePath, "task.txt"), "task\n").then(() => land(workspace.workspacePath)).catch((error: Error) => error);
+    assert.ok(outcome instanceof Error, JSON.stringify(outcome));
+    assert.match(outcome.message, /\.peach\/execution\.json is no longer read .* rename it to slipway\.json/);
+    assert.equal(jj(f.repo, ["log", "--no-graph", "-r", "main", "-T", "description"]), "Initial", "nothing was integrated");
   } finally {
     await f.dispose();
   }
-}, 180_000);
+}, 120_000);
 
 // YardSmith yardsmith-t-f13816: a failed step stays failed on retry once the tip moved,
 // but a later landing published the artifact after its own step, so cleanup releases it.

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { runBoundedProcess } from "./bounded-process.mjs";
-import { EXECUTION_POLICY_PATHS } from "./execution-policy.mjs";
+import { EXECUTION_POLICY_PATH } from "./execution-policy.mjs";
 import { postIntegrationPolicyDigest } from "./post-integration-policy.mjs";
 import { readExactExecutionPolicy, readPostIntegrationPolicy } from "./post-integration-source.mjs";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
@@ -35,7 +35,7 @@ export async function isAncestor(gitDirectory, ancestorCommit, descendantCommit,
 
 /**
  * Prove `other` has the same migration inputs as `exact`, judged by `exact`'s
- * policy: the policy file (`slipway.json` or the legacy `.peach/execution.json`), the declared trigger and artifact paths, and
+ * policy: the policy file (`slipway.json`), the declared trigger and artifact paths, and
  * the finalization command and probe packages and script directories.
  */
 export async function verifyUnchangedMigrationInputs(gitDirectory, exactCommit, otherCommit, policyDigest, environmentFactory, abortSignal) {
@@ -58,7 +58,7 @@ export async function verifyUnchangedMigrationInputs(gitDirectory, exactCommit, 
         .map((arg) => path.posix.dirname(path.posix.join(cwd, arg)))];
     });
   const protectedPaths = [...new Set([
-    ...EXECUTION_POLICY_PATHS,
+    EXECUTION_POLICY_PATH,
     ...migration.triggerPaths, ...migration.artifactPaths,
     ...commandInputs,
   ])];

@@ -23,7 +23,7 @@ export function postIntegrationPolicy(value) {
     throw new Error("Invalid post-integration identity, idempotency contract or deadline");
   }
   const keys = row.environmentKeys ?? [];
-  if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(key) || key.startsWith("SLIPWAY_FINALIZATION_") || key.startsWith("PEACH_FINALIZATION_") || ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "NODE_OPTIONS", "BUN_OPTIONS"].includes(key))) {
+  if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(key) || key.startsWith("SLIPWAY_FINALIZATION_") || ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "NODE_OPTIONS", "BUN_OPTIONS"].includes(key))) {
     throw new Error("Invalid post-integration environment declaration");
   }
   const approvalMode = row.approvalMode ?? "explicit-human";

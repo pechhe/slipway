@@ -23,7 +23,7 @@ const jj = (cwd: string, args: string[]) =>
 const CHECK = [
   "const fs = require('node:fs');",
   "const value = fs.readFileSync('value.txt', 'utf8');",
-"const both = (name) => process.env['SLIPWAY_POST_LAND_' + name] === process.env['PEACH_POST_LAND_' + name] ? process.env['SLIPWAY_POST_LAND_' + name] : 'mismatch';",
+"const both = (name) => process.env['PEACH_POST_LAND_' + name] === undefined ? process.env['SLIPWAY_POST_LAND_' + name] : 'retired-name-set';",
   "fs.writeFileSync(process.env.EVIDENCE, JSON.stringify({ value, base: both('BASE'), commit: both('COMMIT') }));",
   "process.exit(value === 'broken' ? 3 : 0);",
 ].join("\n");
@@ -34,13 +34,13 @@ async function fixture() {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "peach-post-land-")));
   const repo = path.join(root, "repo");
   const evidence = path.join(root, "evidence.json");
-  await mkdir(path.join(repo, ".peach"), { recursive: true });
+  await mkdir(repo, { recursive: true });
   const git = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
   git(["init", "-q", "-b", "main"]);
   git(["config", "user.name", "Fixture"]);
   git(["config", "user.email", "fixture@example.com"]);
   await writeFile(path.join(repo, "value.txt"), "initial");
-  await writeFile(path.join(repo, ".peach", "execution.json"), JSON.stringify({
+  await writeFile(path.join(repo, "slipway.json"), JSON.stringify({
     version: 1, integrationBranch: "main", requiredLocalVerification: [],
     postLandVerification: [{ executable: process.execPath, args: ["-e", CHECK] }],
   }));

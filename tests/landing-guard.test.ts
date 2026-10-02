@@ -53,7 +53,7 @@ test("ordinary work and feature-branch publication are allowed", () => {
   ]) assert.equal(landingBypass(line, branches), null, line);
 });
 
-test("slipway.json governs the guard and wins over the legacy path in the same directory", async () => {
+test("slipway.json governs the guard and the retired path beside it is ignored", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "slipway-landing-guard-"));
   try {
     const neutral = path.join(root, "neutral");
@@ -66,19 +66,35 @@ test("slipway.json governs the guard and wins over the legacy path in the same d
     const push = (cwd: string, branch: string) => landingGuardDecision({ tool_name: "Bash", cwd, tool_input: { command: `jj git push -b ${branch}` } });
     assert.equal((await push(neutral, "develop"))?.hookSpecificOutput.permissionDecision, "deny");
     assert.equal((await push(both, "trunk"))?.hookSpecificOutput.permissionDecision, "deny");
-    assert.equal(await push(both, "develop"), null, "the legacy file is ignored once slipway.json exists");
+    assert.equal(await push(both, "develop"), null, "the retired file is ignored once slipway.json exists");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a directory with only the retired path still guards (fail closed) and the denial names slipway.json", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "slipway-landing-guard-retired-"));
+  try {
+    await mkdir(path.join(root, ".peach"), { recursive: true });
+    await writeFile(path.join(root, ".peach", "execution.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
+    const push = (branch: string) => landingGuardDecision({ tool_name: "Bash", cwd: root, tool_input: { command: `jj git push -b ${branch}` } });
+    for (const branch of ["develop", "main", "master"]) {
+      const denied = await push(branch);
+      assert.equal(denied?.hookSpecificOutput.permissionDecision, "deny", branch);
+      assert.match(denied!.hookSpecificOutput.permissionDecisionReason, /slipway land.*no longer read.*rename it to slipway\.json/);
+    }
+    assert.equal(await push("feature"), null, "feature bookmarks stay pushable");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("the hook decision applies only to Bash in a governed repository", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "peach-landing-guard-"));
+  const root = await mkdtemp(path.join(tmpdir(), "slipway-landing-guard-"));
   try {
     const governed = path.join(root, "governed", "nested");
-    await mkdir(path.join(root, "governed", ".peach"), { recursive: true });
     await mkdir(governed, { recursive: true });
-    await writeFile(path.join(root, "governed", ".peach", "execution.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
+    await writeFile(path.join(root, "governed", "slipway.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
     const push = (cwd: string, command: string) => landingGuardDecision({ tool_name: "Bash", cwd, tool_input: { command } });
     const denied = await push(governed, "jj git push -b develop");
     assert.equal(denied?.hookSpecificOutput.permissionDecision, "deny");

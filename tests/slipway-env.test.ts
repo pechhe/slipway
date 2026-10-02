@@ -10,14 +10,14 @@ const declaring = (environmentKeys: string[]) => ({
   environmentKeys,
 });
 
-test("declared environment keys may not shadow either finalization prefix", () => {
+test("declared environment keys may not shadow the finalization prefix", () => {
   assert.deepEqual(postIntegrationPolicy(declaring(["DATABASE_URL"]))?.environmentKeys, ["DATABASE_URL"]);
-  for (const key of ["SLIPWAY_FINALIZATION_COMMIT", "SLIPWAY_FINALIZATION_OTHER", "PEACH_FINALIZATION_KEY"]) {
+  for (const key of ["SLIPWAY_FINALIZATION_COMMIT", "SLIPWAY_FINALIZATION_OTHER"]) {
     assert.throws(() => postIntegrationPolicy(declaring([key])), /environment declaration/, key);
   }
 });
 
-test("SLIPWAY_COMMAND_TIMEOUT_MS bounds workspace commands, with PEACH_WORKSPACE_COMMAND_TIMEOUT_MS as the fallback", async () => {
+test("SLIPWAY_COMMAND_TIMEOUT_MS bounds workspace commands, and the retired PEACH_WORKSPACE_COMMAND_TIMEOUT_MS is ignored", async () => {
   const names = ["SLIPWAY_COMMAND_TIMEOUT_MS", "PEACH_WORKSPACE_COMMAND_TIMEOUT_MS"] as const;
   const hang = () => runWorkspaceCommand(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"]);
   const timeoutOf = async (env: Partial<Record<(typeof names)[number], string>>) => {
@@ -32,6 +32,5 @@ test("SLIPWAY_COMMAND_TIMEOUT_MS bounds workspace commands, with PEACH_WORKSPACE
     }
   };
   assert.equal(await timeoutOf({ SLIPWAY_COMMAND_TIMEOUT_MS: "1000" }), "1");
-  assert.equal(await timeoutOf({ PEACH_WORKSPACE_COMMAND_TIMEOUT_MS: "2000" }), "2");
-  assert.equal(await timeoutOf({ SLIPWAY_COMMAND_TIMEOUT_MS: "1000", PEACH_WORKSPACE_COMMAND_TIMEOUT_MS: "30000" }), "1", "the slipway name wins");
+  assert.equal(await timeoutOf({ SLIPWAY_COMMAND_TIMEOUT_MS: "2000", PEACH_WORKSPACE_COMMAND_TIMEOUT_MS: "1000" }), "2", "the retired name is not read");
 }, 30_000);

@@ -28,9 +28,9 @@ export type IntegrationBranchProbes = {
 };
 
 export const EXECUTION_POLICY_PATH: "slipway.json";
-export const LEGACY_EXECUTION_POLICY_PATH: ".peach/execution.json";
-export const EXECUTION_POLICY_PATHS: readonly ["slipway.json", ".peach/execution.json"];
-export function warnLegacyExecutionPolicy(location: string): void;
+export const RETIRED_EXECUTION_POLICY_PATH: ".peach/execution.json";
+export const EXECUTION_POLICY_PROBE_PATHS: readonly ["slipway.json", ".peach/execution.json"];
+export function retiredExecutionPolicyError(location: string): Error & { code: "SLIPWAY_RETIRED_POLICY_PATH" };
 export function selectExecutionPolicyPath(exists: (path: string) => Promise<boolean>, location: string): Promise<string | null>;
 export const SAFE_BRANCH: RegExp;
 export const UNDECLARED_POLICY: Readonly<Pick<ExecutionPolicy, "requiredLocalVerification" | "postLandVerification" | "remote" | "parallelExecution" | "migrationFinalization">>;

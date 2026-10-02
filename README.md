@@ -5,11 +5,10 @@ Harness-neutral JJ workspace and landing tool. One tagged artifact is both the
 
 slipway was extracted from `pechhe/peach-pi` at `37a32367` (the landing closure in
 `packages/pi-client/src/lib`, its CLI and its tests), with that history preserved.
-It behaves like the `peach-workspace` it came from. Since v0.2.0 it also reads the
-neutral repository config and sets the neutral environment names described below,
-alongside the old ones. Since v1.0.0 it keeps its state under `~/.slipway` and
-retires `peach-workspace` (see [State and cutover](#state-and-cutover)). See
-[CHANGELOG.md](CHANGELOG.md).
+It behaves like the `peach-workspace` it came from, under neutral names: since
+v1.0.0 it keeps its state under `~/.slipway` and retires `peach-workspace` (see
+[State and cutover](#state-and-cutover)), and since v1.1.0 only `slipway.json` and
+the `SLIPWAY_*` environment names exist. See [CHANGELOG.md](CHANGELOG.md).
 
 ## State and cutover
 
@@ -55,26 +54,23 @@ between machines: they are per-machine lock stores.
 
 ## Repository config
 
-A repository's landing policy is `slipway.json` at its root. If it is absent,
-slipway reads the legacy `.peach/execution.json` (same schema) and prints a
-one-line deprecation warning to stderr naming `slipway.json`. When both exist,
-`slipway.json` wins. This holds for every reader: the working-file policy, the
-landing guard, and the policy read from an exact commit during landing and
-finalization. A later release refuses the legacy path.
+A repository's landing policy is `slipway.json` at its root. The pre-v1.1.0 path
+`.peach/execution.json` is no longer read: a repository (or a commit being landed
+or finalized) that has only that file is refused with a message naming
+`slipway.json`. Rename it. Once `slipway.json` exists, a leftover old file is
+ignored. The landing guard keeps guarding a repository that has only the old file
+(its declared branch, `main` and `master`), and its denial names `slipway.json`.
 
 ## Environment contract
 
-Verification commands receive both name sets until a later release removes the
-`PEACH_*` names:
+| Name | Set for |
+| --- | --- |
+| `SLIPWAY_POST_LAND_BASE`, `SLIPWAY_POST_LAND_COMMIT` | Post-land verification commands. |
+| `SLIPWAY_VERIFICATION_SLOT` | Commands running inside the held verification slot. Set to `held`, it lets a nested landing pass through. |
+| `SLIPWAY_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | Post-integration finalization commands and target probes. A policy's `environmentKeys` may not start with `SLIPWAY_FINALIZATION_`. |
 
-| slipway name | Legacy name | Set for |
-| --- | --- | --- |
-| `SLIPWAY_POST_LAND_BASE`, `SLIPWAY_POST_LAND_COMMIT` | `PEACH_POST_LAND_BASE`, `PEACH_POST_LAND_COMMIT` | Post-land verification commands. |
-| `SLIPWAY_VERIFICATION_SLOT` | `PEACH_VERIFICATION_SLOT` | Commands running inside the held verification slot. Either name set to `held` lets a nested landing pass through. |
-| `SLIPWAY_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | `PEACH_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | Post-integration finalization commands and target probes. A policy's `environmentKeys` may not start with either prefix. |
-
-slipway reads `SLIPWAY_COMMAND_TIMEOUT_MS` (the per-command timeout for jj, git
-and gh), falling back to `PEACH_WORKSPACE_COMMAND_TIMEOUT_MS`.
+slipway reads `SLIPWAY_COMMAND_TIMEOUT_MS`, the per-command timeout for jj, git
+and gh. The pre-v1.1.0 Peach environment names are neither set nor read.
 
 ## Install
 
@@ -82,7 +78,7 @@ Releases are git tags. Nothing is published to npm. The unscoped `slipway` name
 there belongs to an unrelated package.
 
 ```sh
-bun add -g github:pechhe/slipway#v1.0.0
+bun add -g github:pechhe/slipway#v1.1.0
 slipway status
 ```
 

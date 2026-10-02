@@ -1,35 +1,50 @@
 /**
- * A Claude Code PreToolUse guard: in a repository governed by `slipway.json` (or the
- * legacy `.peach/execution.json`),
- * the integration branch moves and is published only through `slipway land`.
+ * A Claude Code PreToolUse guard: in a repository governed by `slipway.json`, the
+ * integration branch moves and is published only through `slipway land`.
  * Pushing feature bookmarks for a pull request stays allowed.
  */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { EXECUTION_POLICY_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
+import { EXECUTION_POLICY_PROBE_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
 const LAND = "Use `slipway land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
 
-/** Nearest policy above `cwd` (`slipway.json` before the legacy path), with its integration branches; null when ungoverned. */
-export async function governedBranches(cwd) {
+/** The raw `integrationBranch` of an unparseable or refused policy text, if it names one. */
+const rawBranch = (raw) => {
+  try { const declared = JSON.parse(raw)?.integrationBranch; return typeof declared === "string" && declared ? declared : null; } catch { return null; }
+};
+
+/**
+ * Nearest policy above `cwd` and the branches it guards, or null when ungoverned.
+ * A directory with only the retired `.peach/execution.json` is refused, not read,
+ * but still guarded (fail closed): `retired` carries the refusal for the deny reason.
+ */
+async function governance(cwd) {
   for (let dir = cwd; ; dir = dirname(dir)) {
     const texts = new Map();
-    for (const candidate of EXECUTION_POLICY_PATHS) {
+    for (const candidate of EXECUTION_POLICY_PROBE_PATHS) {
       const text = await readFile(join(dir, candidate), "utf8").catch(() => null);
       if (text !== null) texts.set(candidate, text);
     }
-    const found = await selectExecutionPolicyPath(async (candidate) => texts.has(candidate), dir);
+    let found;
+    try { found = await selectExecutionPolicyPath(async (candidate) => texts.has(candidate), dir); } catch (error) {
+      const declared = rawBranch([...texts.values()][0]);
+      return { branches: [...new Set([...(declared ? [declared] : []), "main", "master"])], retired: error.message };
+    }
     if (found !== null) {
       const raw = texts.get(found);
       let declared;
-      try { declared = parseExecutionPolicy(raw, found).integrationBranch; } catch {
-        // An invalid policy still governs: keep guarding whatever branch it names.
-        try { declared = JSON.parse(raw)?.integrationBranch; } catch { /* unreadable */ }
-      }
-      return typeof declared === "string" && declared ? [declared] : ["main", "master"];
+      // An invalid policy still governs: keep guarding whatever branch it names.
+      try { declared = parseExecutionPolicy(raw, found).integrationBranch; } catch { declared = rawBranch(raw); }
+      return { branches: typeof declared === "string" && declared ? [declared] : ["main", "master"], retired: null };
     }
     if (dirname(dir) === dir) return null;
   }
+}
+
+/** Nearest policy above `cwd` (`slipway.json`), with its integration branches; null when ungoverned. */
+export async function governedBranches(cwd) {
+  return (await governance(cwd))?.branches ?? null;
 }
 
 /** Split a shell line into simple commands' words; quoting is honoured, expansion is not attempted. */
@@ -124,7 +139,8 @@ export function landingBypass(line, branches) {
 /** Claude Code hook input → a deny decision, or null to let the call proceed. */
 export async function landingGuardDecision(input) {
   if (input?.tool_name !== "Bash" || typeof input.tool_input?.command !== "string") return null;
-  const branches = await governedBranches(input.cwd ?? process.cwd());
-  const reason = branches && landingBypass(input.tool_input.command, branches);
+  const governed = await governance(input.cwd ?? process.cwd());
+  const bypass = governed && landingBypass(input.tool_input.command, governed.branches);
+  const reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
   return reason ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } } : null;
 }

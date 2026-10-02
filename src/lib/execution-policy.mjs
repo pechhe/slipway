@@ -1,6 +1,6 @@
 /**
- * The one reader of a repository's policy, `slipway.json` at its root (or, until a
- * later release removes it, the legacy `.peach/execution.json`): strict parsing, reading
+ * The one reader of a repository's policy, `slipway.json` at its root (a repository
+ * governed only by the retired `.peach/execution.json` is refused): strict parsing, reading
  * from a checkout or an exact revision, and integration-branch resolution
  * (declared → origin/HEAD → main → master). Landing reads the policy committed on
  * the integration bookmark, never the primary checkout's working files.
@@ -13,10 +13,10 @@ import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
 
 export const EXECUTION_POLICY_PATH = "slipway.json";
-/** Still read, with a deprecation warning, when `slipway.json` is absent. A later release removes it. */
-export const LEGACY_EXECUTION_POLICY_PATH = ".peach/execution.json";
-/** Candidate policy paths in precedence order: `slipway.json` wins when both exist. */
-export const EXECUTION_POLICY_PATHS = Object.freeze([EXECUTION_POLICY_PATH, LEGACY_EXECUTION_POLICY_PATH]);
+/** The pre-v1.1.0 policy path. Never read: a repository governed only by it is refused. */
+export const RETIRED_EXECUTION_POLICY_PATH = ".peach/execution.json";
+/** Paths to probe for a policy: `slipway.json` governs; the retired path alone is refused. */
+export const EXECUTION_POLICY_PROBE_PATHS = Object.freeze([EXECUTION_POLICY_PATH, RETIRED_EXECUTION_POLICY_PATH]);
 const POLICY_BYTES = 64 * 1024;
 const MAX_CHECKS = 20;
 const MAX_ARGS = 100;
@@ -32,29 +32,21 @@ const FALLBACK_BRANCHES = ["main", "master"];
 let policyLabel = EXECUTION_POLICY_PATH;
 const fail = (message) => { throw new Error(`${policyLabel} ${message}`); };
 
-const warnedLegacy = new Set();
-/**
- * One stderr line, once per process and repository, when a repository is governed
- * by the legacy policy path. Never stdout: commands print JSON there. `location` is
- * a checkout or its `.git` directory; both name the same repository.
- */
-export function warnLegacyExecutionPolicy(location) {
-  const key = String(location).replace(/\/\.git\/?$/, "");
-  if (warnedLegacy.has(key)) return;
-  warnedLegacy.add(key);
-  process.stderr.write(`slipway: ${LEGACY_EXECUTION_POLICY_PATH} is deprecated and will stop working in a later release; rename it to ${EXECUTION_POLICY_PATH} at the repository root (${key})\n`);
+/** The refusal for a repository (`location`: a checkout or its `.git` directory) governed only by the retired path. */
+export function retiredExecutionPolicyError(location) {
+  const where = String(location).replace(/\/\.git\/?$/, "");
+  const error = new Error(`${RETIRED_EXECUTION_POLICY_PATH} is no longer read (since slipway v1.1.0); rename it to ${EXECUTION_POLICY_PATH} at the repository root (${where})`);
+  error.code = "SLIPWAY_RETIRED_POLICY_PATH";
+  return error;
 }
 
 /**
- * The policy path that governs, given a probe of which paths exist: `slipway.json`
- * first, else the legacy path (warned about), else null.
+ * The policy path that governs, given a probe of which paths exist: `slipway.json`,
+ * else null. A repository with only the retired path is refused.
  */
 export async function selectExecutionPolicyPath(exists, location) {
-  for (const candidate of EXECUTION_POLICY_PATHS) {
-    if (!await exists(candidate)) continue;
-    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(location);
-    return candidate;
-  }
+  if (await exists(EXECUTION_POLICY_PATH)) return EXECUTION_POLICY_PATH;
+  if (await exists(RETIRED_EXECUTION_POLICY_PATH)) throw retiredExecutionPolicyError(location);
   return null;
 }
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -181,14 +173,11 @@ export const UNDECLARED_POLICY = Object.freeze({ requiredLocalVerification: [], 
 
 /** The policy in a checkout's working files, or null when it declares none. */
 export async function readExecutionPolicy(root) {
-  for (const candidate of EXECUTION_POLICY_PATHS) {
-    let raw;
-    try { raw = await readFile(join(root, candidate), "utf8"); }
-    catch (error) { if (error?.code === "ENOENT") continue; throw error; }
-    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(root);
-    return parseExecutionPolicy(raw, candidate);
-  }
-  return null;
+  const texts = new Map();
+  const exists = async (candidate) => readFile(join(root, candidate), "utf8").then((raw) => { texts.set(candidate, raw); return true; },
+    (error) => { if (error?.code === "ENOENT") return false; throw error; });
+  const found = await selectExecutionPolicyPath(exists, root);
+  return found ? parseExecutionPolicy(texts.get(found), found) : null;
 }
 
 const jjRead = (repo, args) => runWorkspaceCommand("jj", ["--color=never", "--ignore-working-copy", ...args], { cwd: repo });
@@ -207,15 +196,15 @@ async function commitOf(repo, revision) {
 export async function readExecutionPolicyAtCommit(repo, revision) {
   const commitId = await commitOf(repo, revision);
   if (!commitId) throw new Error(`Revision '${revision}' does not exist`);
-  for (const candidate of EXECUTION_POLICY_PATHS) {
-    const shown = await jjRead(repo, ["file", "show", "-r", commitId, `root-file:${symbol(candidate)}`]);
-    if (shown.code !== 0) {
-      if (/No such path/i.test(shown.stderr)) continue;
-      throw new Error(`Could not read ${candidate} at ${commitId}: ${shown.stderr.trim()}`);
-    }
-    if (candidate === LEGACY_EXECUTION_POLICY_PATH) warnLegacyExecutionPolicy(repo);
-    return { commitId, policy: parseExecutionPolicy(shown.stdout, candidate) };
-  }
+  const shown = new Map();
+  const exists = async (candidate) => {
+    const result = await jjRead(repo, ["file", "show", "-r", commitId, `root-file:${symbol(candidate)}`]);
+    if (result.code === 0) { shown.set(candidate, result.stdout); return true; }
+    if (/No such path/i.test(result.stderr)) return false;
+    throw new Error(`Could not read ${candidate} at ${commitId}: ${result.stderr.trim()}`);
+  };
+  const found = await selectExecutionPolicyPath(exists, repo);
+  if (found) return { commitId, policy: parseExecutionPolicy(shown.get(found), found) };
   return { commitId, policy: null };
 }
 

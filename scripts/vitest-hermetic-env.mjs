@@ -23,7 +23,7 @@ assertHermeticHome();
 // fixture. Leaving them set lets fixtures open real terminal tabs or inherit
 // the live workspace mode.
 for (const key of Object.keys(process.env)) {
-  if (/^(CMUX_|PEACH_WORKSPACE_|SLIPWAY_COMMAND_)/.test(key) || key === "PI_CODING_AGENT_DIR") delete process.env[key];
+  if (/^(CMUX_|SLIPWAY_COMMAND_)/.test(key) || key === "PI_CODING_AGENT_DIR") delete process.env[key];
 }
 
 afterAll(() => {

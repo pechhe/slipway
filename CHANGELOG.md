@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.1.0
+
+The transition names are gone: only `slipway.json` and `SLIPWAY_*` exist
+(pechhe/peach-pi#1001).
+
+- **Config refused:** `.peach/execution.json` is no longer read. A repository whose
+  working files, or a commit whose tree, has only that file is refused with an
+  error (code `SLIPWAY_RETIRED_POLICY_PATH`) naming `slipway.json`. This covers
+  working-file reads, landing, exact-commit reads during landing and
+  finalization, and cleanup. The deprecation warning is removed. The landing
+  guard still guards such a repository (its declared branch, `main` and
+  `master`) and names `slipway.json` in its denial.
+- **Environment:** verification commands no longer receive `PEACH_POST_LAND_BASE`,
+  `PEACH_POST_LAND_COMMIT`, `PEACH_VERIFICATION_SLOT` or
+  `PEACH_FINALIZATION_COMMIT|KEY|TARGET`, and `PEACH_VERIFICATION_SLOT=held` no
+  longer passes a nested landing through the slot. `PEACH_WORKSPACE_COMMAND_TIMEOUT_MS`
+  is no longer read. Use the `SLIPWAY_*` names.
+- **Library:** `LEGACY_EXECUTION_POLICY_PATH`, `EXECUTION_POLICY_PATHS`,
+  `warnLegacyExecutionPolicy` and `LEGACY_VERIFICATION_SLOT_ENV` are removed from
+  the internal modules.
+- **slipway's own repository** declares its policy in `slipway.json`.
+
 ## v1.0.0
 
 State moves to `~/.slipway`, and `peach-workspace` is retired (pechhe/peach-pi#1000).
