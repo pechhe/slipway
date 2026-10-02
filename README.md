@@ -134,9 +134,7 @@ state rejects with an error whose `code` is `SLIPWAY_CUTOVER_REQUIRED`;
 ## Development and landing
 
 slipway lands its own changes through `slipway land` from an isolated JJ workspace, under its own
-`.peach/execution.json`. That file keeps the legacy name until the installed
-landing tools all read `slipway.json`, because a v0.1.0 or `peach-workspace`
-landing reads only the legacy path.
+`slipway.json`.
 
 - **Per landing**, the fast static gate runs: `bun install --frozen-lockfile`,
   `bun run check` (Oxlint and the closure boundary) and `bun run typecheck`. No
