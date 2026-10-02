@@ -50,7 +50,8 @@ test("Peach's own policy parses with its landing shape and verification digest u
   assert.equal(parsed.remote, "origin");
   assert.equal(parsed.parallelExecution, true);
   assert.equal(parsed.unattendedMergeToIntegration, true);
-  assert.deepEqual(parsed.postLandVerification, [{ executable: "bun", args: ["run", "test:post-land"] }]);
+  // Heavy suites run at release (`bun run verify:release`), not after each landing.
+  assert.deepEqual(parsed.postLandVerification, []);
   assert.deepEqual(parsed.requiredLocalVerification[1], { executable: "bun", args: ["dedupe", "--check"], concurrent: true });
   // The digest landing records for this declaration before the shared parser existed.
   assert.equal(digest(parsed.requiredLocalVerification), "25effc2d61517a47e37578dae699fe59599f9b43732013020df26aab978316b8");
