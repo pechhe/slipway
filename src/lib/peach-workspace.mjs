@@ -8,7 +8,7 @@
  */
 
 // Workspaces: context, assignment, state and housekeeping (launcher, extension, CLI, hooks, desktop).
-export { explicitIssueNumber, projectPrefix, revisionFacts, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
+export { explicitIssueNumber, projectPrefix, revisionFacts, taskWorkspaceName, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
 export {
   assertWorkspaceMutationAllowed, attachWorkspaceIssue, findWorkspace, inspectWorkspace, inspectWorkspaces, landingStatePaths,
   listWorkspaces, readLandingState, readWorkspaceMode, renameWorkspace, workspaceContinuationState, writeWorkspaceMode,

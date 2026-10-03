@@ -5,8 +5,10 @@
 - **Workspace names:** new workspaces are named by a two-letter project code
   (`peach-pi` → `pp`, `YardSmith` → `ys`): `pp-412` for an Issue, `pp-fix-toast`
   from a task name (`-2`, `-3`… when taken), and a short random id when there is
-  neither. `projectPrefix` returns the code. Existing workspaces keep their names;
-  Issue resume and recovery still accept the old `peach-pi-i412` form.
+  neither. `projectPrefix` returns the code, and `taskWorkspaceName(code,
+  issueNumber, task)` is exported for hosts that rename workspaces. Existing
+  workspaces keep their names; Issue resume and recovery still accept the old
+  `peach-pi-i412` form.
 - **Claude Code plugin:** `claude-plugin/` shows the thread's workspace and
   landing state in the status line, toasts on a successful land, and adds a
   per-thread Isolated/Direct picker and `/slipway`. See the README.
