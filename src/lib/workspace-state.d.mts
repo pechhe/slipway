@@ -23,7 +23,8 @@ export function lockPath(workspaceName: string): string;
 export function landingStatePaths(workspaceName: string): [string, string];
 /** A landing record from either sidecar; an interrupted `prepared` record whose artifact is integrated is promoted to `landed` unless `readOnly`. */
 export function readLandingState(workspaceName: string, options?: { readOnly?: boolean }): Promise<Record<string, unknown> & {
-  version: number; phase?: "prepared" | "landed"; workspaceName: string; workspacePath: string; integrationBranch: string; artifactCommitId: string;
+  version: number; phase?: "prepared" | "landed" | "recovering"; workspaceName: string; workspacePath: string; integrationBranch: string; artifactCommitId: string;
+  publicationRecovery?: { previousLanding: Record<string, unknown>; publishedBase: string; startedAt: string };
 } | null>;
 export function assertIssueAvailable(cwd: string, issueNumber: number | undefined, intendedWorkspace: string): Promise<void>;
 export function assertWorkspaceMutationAllowed(context: WorkspaceContext): Promise<void>;

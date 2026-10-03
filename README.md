@@ -183,6 +183,14 @@ state rejects with an error whose `code` is `SLIPWAY_CUTOVER_REQUIRED`;
 slipway lands its own changes through `slipway land` from an isolated JJ workspace, under its own
 `slipway.json`.
 
+If a concurrent publisher leaves the integration bookmark conflicted after an
+isolated landing, rerun `slipway land` from that preserved workspace. Recovery
+accepts only its exact recorded artifact and the declared remote's published tip,
+with matching committed policies and an unchanged workspace. It retains the
+earlier receipt, takes the published tip as the base, and rebases and verifies the
+candidate again before publication. Extra heads, policy disagreement or later
+workspace edits require reconciliation. An interrupted recovery remains retryable.
+
 - **Per landing**, the fast static gate runs: `bun install --frozen-lockfile`,
   `bun run check` (Oxlint and the closure boundary) and `bun run typecheck`. No
   test suite runs per landing.

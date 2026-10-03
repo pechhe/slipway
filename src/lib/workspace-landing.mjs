@@ -5,9 +5,55 @@ import { describePostLandFailure, latestPostLandResult, startPostLandVerificatio
 import { withVerificationSlot } from "./verification-slot.mjs";
 import { createWorkspace } from "./workspace-create.mjs";
 import { jj, revisionExists, revisionFacts, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
-import { assertWorkspaceMutationAllowed, readLandingState, workspaceMetadata } from "./workspace-state.mjs";
+import { assertWorkspaceMutationAllowed, readLandingState, statePath, workspaceMetadata } from "./workspace-state.mjs";
 import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
-import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
+import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
+import { readExecutionPolicy, readExecutionPolicyAtCommit } from "./execution-policy.mjs";
+import { resolve } from "node:path";
+
+/** Only the recorded unpublished artifact and the published tip may explain a conflict. */
+async function publicationRecovery(cwd, context) {
+  const prior = await readLandingState(context.current.name, { readOnly: true });
+  if (context.current.name === "default" || !prior || !["landed", "recovering"].includes(prior.phase) || prior.verification !== "passed"
+    || prior.workspaceName !== context.current.name || prior.workspacePath !== context.current.root
+    || prior.integrationRoot !== context.integration.root || prior.integrationBranch !== context.integrationBranch
+    || prior.localOnly === true) throw new Error("Conflicted integration requires a recorded unpublished isolated landing");
+  const artifact = await readExecutionPolicyAtCommit(cwd, prior.artifactCommitId);
+  const policy = artifact.policy;
+  if (!policy?.remote || policy.integrationBranch !== context.integrationBranch)
+    throw new Error("Publication recovery requires the recorded artifact's declared branch and remote");
+  const remoteTip = await revisionFacts(cwd, `${context.integrationBranch}@${policy.remote}`);
+  const published = await readExecutionPolicyAtCommit(cwd, remoteTip.commitId);
+  if (JSON.stringify(policy) !== JSON.stringify(published.policy))
+    throw new Error("Publication recovery refused: committed integration policies disagree");
+  const heads = (await jj(cwd, ["--ignore-working-copy", "log", "-r", `bookmarks(exact:${JSON.stringify(context.integrationBranch)})`, "--no-graph", "-T", 'commit_id ++ "\\n"'])).trim().split("\n");
+  if (heads.length !== 2 || !heads.includes(prior.artifactCommitId) || !heads.includes(published.commitId))
+    throw new Error("Publication recovery refused: integration conflict contains an unexplained head");
+  const current = await revisionFacts(cwd, "@");
+  const parent = await revisionFacts(cwd, "@-");
+  if (!current.empty || current.conflict || parent.commitId !== prior.artifactCommitId)
+    throw new Error("Publication recovery refused: workspace differs from its recorded landing");
+  const metadata = await workspaceMetadata(context.current.name);
+  if ((prior.issueNumber ?? null) !== (metadata?.issueNumber ?? null))
+    throw new Error("Publication recovery refused: workspace Issue changed");
+  if (metadata?.implementationChangeId && metadata.implementationChangeId !== (prior.workspaceImplementationChangeId ?? prior.artifactChangeId))
+    throw new Error("Publication recovery refused: workspace implementation ownership changed");
+  return { prior, published, policy };
+}
+
+async function landingContext(cwd) {
+  try { return await workspaceContext(cwd); }
+  catch (error) {
+    // The working policy only names the branch to inspect; both committed policies
+    // must agree before the landing can reach its serialized recovery transition.
+    const hint = await readExecutionPolicy(cwd);
+    if (!hint?.integrationBranch) throw error;
+    const context = await workspaceContext(cwd, hint.integrationBranch);
+    if (!context) throw error;
+    const recovery = await publicationRecovery(cwd, context);
+    return { ...context, configuration: recovery.policy };
+  }
+}
 
 /**
  * The land command: one serialized landing of a workspace, its background
@@ -16,7 +62,7 @@ import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 
 /** Landing is one operation: fetch → rebase → verify → move bookmark → push. */
 export async function landWorkspace(cwd = process.cwd(), options = {}) {
-  const context = await workspaceContext(cwd);
+  const context = await landingContext(cwd);
   if (!context || (context.current.name === "default" && !options.allowDefaultWorkspace)) throw new Error("Landing requires an isolated jj workspace");
   options.onStage?.("preparing");
   if (options.localOnly !== undefined && typeof options.localOnly !== "boolean") throw new Error("localOnly must be an explicit boolean");
@@ -43,6 +89,24 @@ async function landInSlot(cwd, context, remote, options) {
   // Rebase onto the latest published integration; an offline fetch surfaces again at push.
   // The candidate's own context then reads the fetched bookmark's committed policy (D3).
   if (remote) await fetchIntegration(cwd, remote, context.integrationBranch);
+  // A concurrent publisher can leave JJ's local bookmark conflicted after a
+  // failed push. Preserve the owned candidate and use the published tip as the
+  // next base; normal landing then rebases and verifies it again.
+  try { await revisionFacts(cwd, context.integrationBranch); }
+  catch {
+    await withWorkspaceTransaction(`integrate:${resolve(context.integration.root)}:${context.integrationBranch}`, async () => {
+      const recovery = await publicationRecovery(cwd, context);
+      if (remote !== recovery.policy.remote) throw new Error("Publication recovery remote changed");
+      // Record intent before changing the base so an interruption can resume
+      // through the normal candidate path, retaining the earlier exact receipt.
+      if (recovery.prior.phase !== "recovering") await writeWorkspaceJson(statePath(context.current.name), {
+        ...recovery.prior, phase: "recovering", publicationRecovery: {
+          previousLanding: recovery.prior, publishedBase: recovery.published.commitId, startedAt: new Date().toISOString(),
+        },
+      });
+      await jj(cwd, ["bookmark", "set", context.integrationBranch, "--revision", recovery.published.commitId]);
+    });
+  }
   const integrate = async () => {
     const prior = await readLandingState(context.current.name);
     if (prior?.phase === "landed" && prior.workspacePath === context.current.root && prior.integrationRoot === context.integration.root && !await workspaceHasUnintegratedWork(cwd, context.integrationBranch)

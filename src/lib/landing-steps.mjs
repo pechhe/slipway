@@ -6,7 +6,7 @@ import { assertNoForeignPrimaryWriter } from "./primary-checkout-writer.mjs";
 import { runRequiredVerification } from "./required-verification.mjs";
 import { issueTitle, jj, revisionExists, revisionFacts, run, workspaceContext } from "./workspace-jj.mjs";
 import { stateHome } from "./workspace-paths.mjs";
-import { readJsonOptional, statePath, workspaceMetadata } from "./workspace-state.mjs";
+import { readJsonOptional, readLandingState, statePath, workspaceMetadata } from "./workspace-state.mjs";
 import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 
 /**
@@ -18,6 +18,7 @@ import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 async function writeLandingState(context, artifact, verification, phase = "landed", localOnly, operationId) {
   await mkdir(stateHome(), { recursive: true, mode: 0o700 });
   const metadata = await workspaceMetadata(context.current.name);
+  const prior = await readLandingState(context.current.name, { readOnly: true });
   const landedAt = new Date().toISOString();
   await writeWorkspaceJson(statePath(context.current.name), {
     version: 1, phase, operationId, cleanupPending: true, ...(localOnly !== undefined ? { localOnly } : {}), workspaceName: context.current.name, workspacePath: context.current.root,
@@ -26,6 +27,7 @@ async function writeLandingState(context, artifact, verification, phase = "lande
     artifactDescription: artifact.description, verification: verification.status,
     verificationCommands: verification.passed, verificationEvidence: verification, landedAt,
     workspaceImplementationChangeId: metadata?.implementationChangeId,
+    ...(prior?.publicationRecovery ? { publicationRecovery: prior.publicationRecovery } : {}),
     // No archive period: a delivered checkout is eligible for cleanup at landing.
     cleanupEligibleAt: landedAt,
     ...(typeof metadata?.issueNumber === "number" ? { issueNumber: metadata.issueNumber } : {}),
