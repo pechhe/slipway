@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Workspace names:** new workspaces are named by a two-letter project code
+  (`peach-pi` → `pp`, `YardSmith` → `ys`): `pp-412` for an Issue, `pp-fix-toast`
+  from a task name (`-2`, `-3`… when taken), and a short random id when there is
+  neither. `projectPrefix` returns the code. Existing workspaces keep their names;
+  Issue resume and recovery still accept the old `peach-pi-i412` form.
+
 ## v1.2.0
 
 - **Release:** `slipway release` promotes the integration branch to a declared

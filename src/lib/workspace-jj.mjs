@@ -28,10 +28,41 @@ export function explicitIssueNumber(value) {
   return match ? Number(match[1]) : null;
 }
 
-export function taskWorkspaceName(project, issueNumber) {
-  return issueNumber
-    ? `${project}-i${issueNumber}`
-    : `${project}-t-${randomUUID().slice(0, 6).toLowerCase()}`;
+/**
+ * Two-letter project code used in workspace names: the initials of the first two
+ * words of the folder name (`peach-pi` → `pp`, `YardSmith` → `ys`), else its
+ * first two letters (`slipway` → `sl`).
+ */
+export function projectCode(folderName) {
+  const words = folderName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (words.length >= 2) return `${words[0][0]}${words[1][0]}`;
+  return (words[0] ?? "").slice(0, 2).padEnd(2, "x");
+}
+
+/** `pp-412` for an Issue, `pp-fix-toast` for a named task, `pp-a6f18e` otherwise. */
+export function taskWorkspaceName(project, issueNumber, task) {
+  if (issueNumber) return `${project}-${issueNumber}`;
+  const slug = taskSlug(task);
+  return slug ? `${project}-${slug}` : `${project}-${randomUUID().slice(0, 6).toLowerCase()}`;
+}
+
+/** At most 24 characters of the task's slug, cut at a word boundary where one exists. */
+function taskSlug(task) {
+  if (typeof task !== "string") return "";
+  const full = task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (full.length <= 24) return full;
+  const cut = full.slice(0, 24);
+  const atWord = full[24] === "-" ? cut : cut.replace(/-[^-]*$/, "");
+  return (atWord || cut).replace(/-+$/, "");
+}
+
+/** The names an Issue's workspace had before project codes: `peach-pi-i412`. */
+export function legacyIssueWorkspaceName(folderName, issueNumber) {
+  return `${workspaceSlug(folderName, 24)}-i${issueNumber}`;
 }
 
 /** Bounded jj/git/gh runner with the landing command environment; see workspace-command. */
@@ -175,11 +206,11 @@ export async function issueTitle(repositoryRoot, issueNumber) {
   return result.stdout.trim() || null;
 }
 
-/** Stable short project prefix used in workspace names, e.g. "yardsmith". */
+/** Stable short project prefix used in workspace names, e.g. "ys". */
 export async function projectPrefix(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
   if (!context) return null;
-  return workspaceSlug(basename(context.integration.root), 24);
+  return projectCode(basename(context.integration.root));
 }
 
 export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {

@@ -25,7 +25,9 @@ export type RevisionFacts = { changeId: string; commitId: string; empty: boolean
 export function revisionFacts(cwd: string, revision: string): Promise<RevisionFacts>;
 export function projectPrefix(cwd?: string): Promise<string | null>;
 export function workspaceSlug(value: string, limit?: number): string;
-export function taskWorkspaceName(project: string, issueNumber?: number | null): string;
+export function projectCode(folderName: string): string;
+export function taskWorkspaceName(project: string, issueNumber?: number | null, task?: string | null): string;
+export function legacyIssueWorkspaceName(folderName: string, issueNumber: number): string;
 export function parseWorkspaceList(output: string): Array<Pick<WorkspaceEntry, "name" | "root" | "changeId" | "commitId">>;
 export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
 export function revisionExists(cwd: string, revision: string): Promise<boolean>;

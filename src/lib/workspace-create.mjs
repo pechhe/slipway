@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
-import { parseWorkspaceList, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext, workspaceSlug } from "./workspace-jj.mjs";
+import { legacyIssueWorkspaceName, parseWorkspaceList, projectCode, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext } from "./workspace-jj.mjs";
 import { workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import {
   assertIssueAvailable,
@@ -235,8 +235,11 @@ async function recoverExistingIssueWorkspace(cwd, workspacePath, workspaceName, 
 export async function recoverIssueWorkspace(cwd, options, hooks = {}) {
   const { issueNumber, workspaceName } = options;
   if (!Number.isInteger(issueNumber) || issueNumber <= 0) throw new Error("Issue number must be a positive integer");
-  const expectedName = taskWorkspaceName(workspaceSlug(basename(await realpath(cwd)), 24), issueNumber);
-  if (workspaceName !== expectedName) throw new Error(`Issue #${issueNumber} explicit recovery workspace must be jj:${expectedName}`);
+  const folder = basename(await realpath(cwd));
+  const expectedName = taskWorkspaceName(projectCode(folder), issueNumber);
+  if (workspaceName !== expectedName && workspaceName !== legacyIssueWorkspaceName(folder, issueNumber)) {
+    throw new Error(`Issue #${issueNumber} explicit recovery workspace must be jj:${expectedName}`);
+  }
   const prior = await workspaceMetadata(workspaceName);
   if (typeof prior?.issueNumber === "number" && prior.issueNumber !== issueNumber) {
     throw new Error(`Issue #${issueNumber} explicit recovery conflicts with existing workspace Issue metadata`);
@@ -278,6 +281,23 @@ async function assigned(hooks, context, task, { issueNumber, attach = true, work
   return { ...context, context, pooled: false, ...result, workspacePath, readiness };
 }
 
+/**
+ * The new workspace's name. An Issue's is deterministic so a surviving checkout is
+ * found again (under its pre-project-code name too); a task's gains `-2`, `-3`…
+ * while another workspace or checkout already holds it.
+ */
+async function newWorkspaceName(cwd, folder, issueNumber, task) {
+  const base = taskWorkspaceName(projectCode(folder), issueNumber, task);
+  if (issueNumber) {
+    const legacy = legacyIssueWorkspaceName(folder, issueNumber);
+    return !exists(join(workspaceHome(), base)) && exists(join(workspaceHome(), legacy)) ? legacy : base;
+  }
+  const taken = new Set((await listWorkspaces(cwd)).map((workspace) => workspace.name));
+  let name = base;
+  for (let index = 2; taken.has(name) || exists(join(workspaceHome(), name)); index += 1) name = `${base}-${index}`;
+  return name;
+}
+
 async function createWorkspaceUnlocked(task, cwd, options) {
   const { issueNumber, hooks = {} } = options;
   const context = await workspaceContext(cwd);
@@ -295,7 +315,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
       return assigned(hooks, resumed, task, { issueNumber, attach: false, created: false, reused: true, workspacePath: existing.root });
     }
   }
-  let name = taskWorkspaceName(workspaceSlug(basename(context.integration.root), 24), issueNumber);
+  let name = await newWorkspaceName(cwd, basename(context.integration.root), issueNumber, task);
   await assertIssueAvailable(cwd, issueNumber, name);
   // A surviving Issue checkout at its deterministic path is recovered, never replaced by a spare.
   const survivor = Boolean(issueNumber) && exists(join(workspaceHome(), name));
