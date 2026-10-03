@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.4.0
 
 - **Start:** a new or claimed spare workspace is based on the integration branch
   as published on the declared remote: `start` fetches it first, so work begun on
