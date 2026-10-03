@@ -31,6 +31,12 @@ export async function integrateLandingCandidate(cwd, options, io) {
         throw new Error("Integration bookmark moved during verification; rerun landing against the new base");
     };
     await assertIdentity();
+    // A publication retry may still be on the empty child created by the first
+    // landing. Gates inspecting @ must see the exact candidate, not just its tree.
+    if ((await revisionFacts(cwd, "@")).commitId !== candidate.commitId) {
+      await jj(cwd, ["edit", candidate.commitId]);
+      await assertIdentity();
+    }
     options.onStage?.("verifying");
     const verification = await (adapter.verify?.({ base: base.commitId, candidate: candidate.commitId }) ?? runVerification(context, options.onProgress));
     await assertIdentity();

@@ -190,6 +190,8 @@ with matching committed policies and an unchanged workspace. It retains the
 earlier receipt, takes the published tip as the base, and rebases and verifies the
 candidate again before publication. Extra heads, policy disagreement or later
 workspace edits require reconciliation. An interrupted recovery remains retryable.
+Verification checks run with the working-copy revision on the exact candidate,
+including retries that started on an empty continuation child.
 
 - **Per landing**, the fast static gate runs: `bun install --frozen-lockfile`,
   `bun run check` (Oxlint and the closure boundary) and `bun run typecheck`. No

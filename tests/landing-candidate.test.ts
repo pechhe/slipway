@@ -7,7 +7,7 @@ vi.mock("../src/lib/workspace-transaction.mjs", () => ({
 }));
 import { integrateLandingCandidate } from "../src/lib/landing-candidate.mjs";
 
-function fixture(direct = false) {
+function fixture(direct = false, emptyChild = false) {
   const context = {
     current: { name: direct ? "default" : "task", root: "/task" },
     integration: { name: "default", root: "/repo" }, integrationBranch: "develop",
@@ -27,10 +27,12 @@ function fixture(direct = false) {
     revisionFacts: async (cwd: string, revision: string) => revision === "develop"
       ? { ...candidate, commitId: liveBase }
       // The primary checkout is an empty `@` on the old integration tip.
-      : cwd === "/repo" && revision === "@" ? { ...candidate, commitId: "primary", empty: true } : liveCandidate,
+      : cwd === "/repo" && revision === "@" ? { ...candidate, commitId: "primary", empty: true }
+      : revision === "@" && emptyChild ? { ...liveCandidate, commitId: "empty-child", empty: true } : liveCandidate,
     jj: async (_cwd: string, args: string[]) => {
       if (args[0] === "diff" || args[0] === "log") return "";
       steps.push(args[0]!);
+      if (args[0] === "edit") { assert.equal(args[1], liveCandidate.commitId); emptyChild = false; }
       return "";
     },
     writeLandingState: async (_ctx: unknown, artifact: typeof candidate, _verification: unknown, phase: string) => {
@@ -66,6 +68,14 @@ for (const direct of [false, true]) test(`shared candidate transition preserves 
   assert.equal(result.cleanupPending, false);
   assert.deepEqual(result.primaryCheckout, { action: "moved" });
   assert.equal(f.state.phase, direct ? undefined : "landed");
+});
+
+test("a retry verifies the exact candidate rather than its empty continuation child", async () => {
+  const f = fixture(false, true);
+  const result = await integrateLandingCandidate("/task", f.options, f.io);
+  assert.deepEqual(f.steps, ["rebase", "generate", "edit", "verify", "bookmark", "new", "new"]);
+  assert.equal(result.artifact.commitId, "generated");
+  assert.equal(f.state.phase, "landed");
 });
 
 test("a live Direct writer defers the primary checkout move but never the integration", async () => {

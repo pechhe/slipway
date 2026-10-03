@@ -14,7 +14,7 @@ async function divergedLanding(changePolicy = false, failRecoveryVerification = 
   const external = await mkdtemp(join(tmpdir(), "slipway-publication-recovery-"));
   const marker = join(external, "failed-once");
   const failedCheck = join(external, "verification-failed-once");
-  const f = await project({ verify: failRecoveryVerification ? (verified) => `${recordCheckout(verified)};const fs=require("node:fs");if(fs.readFileSync(${JSON.stringify(verified)},"utf8").trim().split("\\n").length===2&&!fs.existsSync(${JSON.stringify(failedCheck)})){fs.writeFileSync(${JSON.stringify(failedCheck)},"");process.exit(9)}` : undefined, postIntegration: {
+  const f = await project({ verify: (verified) => `${recordCheckout(verified)};const cp=require("node:child_process");const revision=(r)=>cp.execFileSync("jj",["--ignore-working-copy","log","-r",r,"--no-graph","-T","commit_id"],{encoding:"utf8"}).trim();if(revision("parents(@)")!==revision("main"))process.exit(8);${failRecoveryVerification ? `const fs=require("node:fs");if(fs.readFileSync(${JSON.stringify(verified)},"utf8").trim().split("\\n").length===2&&!fs.existsSync(${JSON.stringify(failedCheck)})){fs.writeFileSync(${JSON.stringify(failedCheck)},"");process.exit(9)}` : ""}`, postIntegration: {
     version: 1, target: "fixture-development-db", idempotency: "artifact-key", approvalMode: "automatic-development", timeoutMs: 30_000,
     command: { executable: "node", args: ["-e", `const fs=require("node:fs");if(!fs.existsSync(${JSON.stringify(marker)})){fs.writeFileSync(${JSON.stringify(marker)},"");process.exit(9)}`] },
     targetProbe: { executable: "node", args: ["-e", 'console.log(JSON.stringify({target:"fixture-development-db"}))'] },
