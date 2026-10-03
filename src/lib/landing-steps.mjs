@@ -102,7 +102,7 @@ export function publicationRemote(context, localOnly) {
   return localOnly === true ? null : context.configuration.remote ?? null;
 }
 
-export const fetchIntegration = (cwd, remote, branch) => run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { cwd });
+export const fetchIntegration = (cwd, remote, branch, options = {}) => run("jj", ["--color=never", "git", "fetch", "--remote", remote, "--branch", branch], { ...options, cwd });
 
 /** Push the integration bookmark and confirm the remote-tracking bookmark contains the artifact. */
 async function publishIntegration(cwd, remote, branch, commitId) {

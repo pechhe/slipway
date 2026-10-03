@@ -15,6 +15,7 @@ import {
   workspaceMetadata,
 } from "./workspace-state.mjs";
 import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
+import { fetchIntegration, publicationRemote } from "./landing-steps.mjs";
 import { claimSpare, forgetWorkspace } from "./workspace-lifecycle.mjs";
 import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 
@@ -281,6 +282,23 @@ async function assigned(hooks, context, task, { issueNumber, attach = true, work
   return { ...context, context, pooled: false, ...result, workspacePath, readiness };
 }
 
+const START_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Bring the integration branch up to its declared remote before a new workspace
+ * is based on it, so work started on one machine sees what another has landed.
+ * Best effort: offline or failing, the workspace starts from the local branch and
+ * landing still fetches and rebases.
+ */
+async function refreshIntegration(context) {
+  const remote = publicationRemote(context);
+  if (!remote) return;
+  const fetched = await fetchIntegration(context.integration.root, remote, context.integrationBranch, { timeoutMs: START_FETCH_TIMEOUT_MS });
+  if (fetched.code === 0) return;
+  const detail = (fetched.stderr || fetched.stdout).trim().split(/\r?\n/).at(-1);
+  console.error(`[fetch] could not refresh ${context.integrationBranch} from ${remote}${detail ? `: ${detail}` : ""}; starting from the local branch`);
+}
+
 /**
  * The new workspace's name. An Issue's is deterministic so a surviving checkout is
  * found again (under its pre-project-code name too); a task's gains `-2`, `-3`…
@@ -319,6 +337,7 @@ async function createWorkspaceUnlocked(task, cwd, options) {
   await assertIssueAvailable(cwd, issueNumber, name);
   // A surviving Issue checkout at its deterministic path is recovered, never replaced by a spare.
   const survivor = Boolean(issueNumber) && exists(join(workspaceHome(), name));
+  if (!survivor) await refreshIntegration(context);
   const spare = survivor ? null : await claimSpare(cwd, name);
   if (spare) name = spare.name;
   const workspacePath = spare?.root ?? join(workspaceHome(), name);

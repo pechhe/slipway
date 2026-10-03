@@ -42,7 +42,7 @@ export function landingPreview(cwd?: string, options?: { allowDefaultWorkspace?:
 export function finishLandedWorkspace(context: WorkspaceContext, state: Record<string, unknown>): Promise<Record<string, unknown>>;
 /** The remote this landing publishes to, or null for local-only/undeclared delivery. */
 export function publicationRemote(context: { configuration: { remote?: string | null } }, localOnly?: boolean): string | null;
-export function fetchIntegration(cwd: string, remote: string, branch: string): ReturnType<typeof import("./workspace-command.mjs").runWorkspaceCommand>;
+export function fetchIntegration(cwd: string, remote: string, branch: string, options?: { timeoutMs?: number }): ReturnType<typeof import("./workspace-command.mjs").runWorkspaceCommand>;
 /** The verification-slot options of one landing, reporting its place in the queue. */
 export function waitForLandingSlot(context: WorkspaceContext, onProgress?: (line: string) => void): {
   scope: string; label: string; onWait: (wait: { ahead: number; holder?: string | null }) => void;

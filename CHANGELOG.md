@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Start:** a new or claimed spare workspace is based on the integration branch
+  as published on the declared remote: `start` fetches it first, so work begun on
+  one machine includes what another has landed. The fetch is best effort; offline
+  or failing (30 s limit), it warns and starts from the local branch, and landing
+  still fetches and rebases.
+
 ## v1.3.0
 
 - **Workspace names:** new workspaces are named by a two-letter project code

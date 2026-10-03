@@ -101,7 +101,7 @@ imports (`start --integration --issue <n> --json`, `remove <path>`):
 | `pool [refill]` | Show ready spare workspaces, or provision one. |
 | `prune --empty` | Remove empty workspaces. |
 | `attach-issue <n>` | Bind the current workspace to Issue `n`. |
-| `start "task"` | Assign an isolated workspace for a task and print its path. |
+| `start "task"` | Assign an isolated workspace for a task and print its path. A new workspace is based on the integration branch freshly fetched from the declared remote (best effort: offline, it starts from the local branch). |
 | `start [--integration] [--issue <n>] [--refill] [--json] ["task"]` | `--integration` allocates from the integration checkout even inside a workspace; `--issue` creates or resumes that Issue's workspace (the task defaults to `Issue #<n>`); `--refill` then starts a background spare refill; `--json` prints one JSON object (`workspacePath`, `workspaceName`, `integrationRoot`, `issueNumber`, `created`, `reused`, `pooled`, `refill`) and sends all install output to stderr. |
 | `preview` | Diffstat of what a landing would integrate. |
 | `land [--local-only] [--direct]` | Verify, integrate and publish the current workspace (or, with `--direct`, the primary checkout). |
