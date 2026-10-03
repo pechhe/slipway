@@ -146,6 +146,21 @@ A release whose range carries migration artifacts also needs `--migrations-ready
 apply those migrations where the release branch deploys first. slipway never
 migrates a release environment itself.
 
+## Claude Code plugin
+
+`claude-plugin/` shows the thread's workspace and landing state in Claude Code's
+status line (`⛵ pp-412 · unlanded`, `✓ pp-412 landed`), toasts on a successful
+`slipway land`, and adds a per-thread Isolated/Direct picker above the prompt in
+JJ repositories plus `/slipway [direct|isolated|default]`. The picker only tells
+the agent which mode to use for this thread; it never changes `slipway mode`.
+Load it in every session by naming the folder in `~/.claude/settings.json`:
+
+```json
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/Engineering/slipway/claude-plugin" } }
+```
+
+Check it with `claude plugin validate claude-plugin`.
+
 ## Library
 
 ```js
