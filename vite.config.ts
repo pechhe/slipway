@@ -17,8 +17,6 @@ export default defineConfig({
     setupFiles: [hermeticEnvironment],
   },
   lint: {
-    // The Claude Code plugin is checked by `claude plugin validate`, against types Claude Code writes beside it.
-    ignorePatterns: ["claude-plugin/**"],
     options: { typeAware: true, typeCheck: false },
   },
 });

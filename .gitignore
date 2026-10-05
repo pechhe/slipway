@@ -3,6 +3,3 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 .vite/
-# Written by Claude Code when it loads the plugin
-claude-plugin/tsconfig.json
-claude-plugin/.claude-plugin/types/

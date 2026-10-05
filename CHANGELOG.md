@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Claude Code plugin removed:** `claude-plugin/` is gone. Drop its folder from
+  `CLAUDE_CODE_PLUGIN_DIRS` if you still load it.
+
 ## v1.4.0
 
 - **Start:** a new or claimed spare workspace is based on the integration branch

@@ -1,6 +1,0 @@
-{
-  "name": "slipway",
-  "version": "0.1.0",
-  "description": "Shows this thread's Slipway JJ workspace and landing state, with a per-thread Isolated/Direct toggle",
-  "types": "./types/index.d.ts"
-}
