@@ -64,6 +64,8 @@ test("a release plans, then verifies the exact candidate and publishes a merge w
     assert.equal(plan.candidate, candidate);
     assert.equal(plan.base, base);
     assert.equal(plan.commits, 2);
+    assert.deepEqual(plan.halfBuiltSpecs, { checked: false, reason: "the repository has no GitHub remote" },
+      "a repository without GitHub still plans, saying the Spec check could not run");
     assert.equal(remoteRef(f, "release"), base, "planning publishes nothing");
 
     const children = () => jj(f.repo, ["log", "--no-graph", "-r", `children(${candidate})`, "-T", 'commit_id ++ "\\n"']).split("\n").sort();
@@ -71,6 +73,7 @@ test("a release plans, then verifies the exact candidate and publishes a merge w
     const released = await releaseIntegration(f.repo, { confirm: candidate.slice(0, 12) });
     assert.equal(released.status, "released", JSON.stringify(released));
     assert.ok(released.ok && released.status === "released");
+    assert.equal(released.halfBuiltSpecs?.checked, false, "confirm re-runs the Spec check");
     assert.equal(remoteRef(f, "release"), released.merge);
     assert.deepEqual(remoteParents(f, released.merge), [base, candidate]);
     assert.equal(remoteTree(f, released.merge), remoteTree(f, candidate));

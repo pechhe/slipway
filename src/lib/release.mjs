@@ -2,8 +2,8 @@
  * `slipway release`: promote the published integration branch to the release
  * branch its committed policy declares. Without a confirmation it only plans: it
  * names the candidate (the integration branch on the remote), the base (the
- * release branch on the remote), the commits between them and any migration
- * artifacts. With `confirm`, the candidate commit id a human approved, it checks
+ * release branch on the remote), the commits between them, any migration
+ * artifacts and any half-built Specs (warned about, never refused). With `confirm`, the candidate commit id a human approved, it checks
  * that exact commit out on its own, runs `requiredReleaseVerification`, builds the
  * release merge, refuses unless its tree is the verified tree, and publishes it.
  *
@@ -13,6 +13,8 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readExecutionPolicyAtCommit } from "./execution-policy.mjs";
+import { githubRepository } from "./post-land-issue.mjs";
+import { halfBuiltSpecs } from "./release-specs.mjs";
 import { runRequiredVerification } from "./required-verification.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { run, workspaceContext } from "./workspace-jj.mjs";
@@ -83,9 +85,10 @@ export async function planRelease(cwd = process.cwd(), { candidate: pinned } = {
   if (!base) refuse(`${releaseBranch}@${remote} does not exist; publish the release branch once before releasing to it`);
 
   const commits = lines(await jjOut(root, ["log", "--no-graph", "-r", `::${candidate} ~ ::${base}`,
-    "-T", 'commit_id ++ "\\t" ++ description.first_line() ++ "\\n"'])).map((line) => {
-    const [commitId, ...subject] = line.split("\t");
-    return { commitId, subject: subject.join("\t") };
+    "-T", 'commit_id ++ "\\t" ++ description.escape_json() ++ "\\n"'])).map((line) => {
+    const [commitId, encoded] = line.split("\t");
+    const description = JSON.parse(encoded);
+    return { commitId, subject: description.split("\n")[0], description };
   });
   const artifactPaths = policy.migrationFinalization?.artifactPaths ?? [];
   const changed = commits.length ? lines(await jjOut(root, ["diff", "--from", base, "--to", candidate, "--name-only"])) : [];
@@ -160,13 +163,17 @@ async function publish(plan, merge) {
  * candidate commit a human approved; `migrationsReady` acknowledges that the
  * release's migration artifacts are already applied where it deploys.
  */
-export async function releaseIntegration(cwd = process.cwd(), { confirm, migrationsReady = false, onProgress = () => {} } = {}) {
+export async function releaseIntegration(cwd = process.cwd(), { confirm, migrationsReady = false, onProgress = () => {}, graphql } = {}) {
   try {
     const plan = await planRelease(cwd, confirm === undefined ? {} : { candidate: confirm });
     const summary = { integrationBranch: plan.integrationBranch, releaseBranch: plan.releaseBranch, remote: plan.remote,
       base: plan.base, candidate: plan.candidate, commits: plan.commits.length, migrationArtifacts: plan.migrationArtifacts,
       checks: plan.checks.map((check) => [check.executable, ...check.args].join(" ")) };
     if (!plan.commits.length) return { ok: true, status: "up_to_date", ...summary };
+    // Re-read on every plan and confirm: a Spec's Tickets may have closed in between.
+    const remotes = await jjRun(plan.root, ["git", "remote", "list"]);
+    summary.halfBuiltSpecs = await halfBuiltSpecs(remotes.code === 0 ? githubRepository(remotes.stdout, plan.remote) : null,
+      plan.commits.map((commit) => commit.description), { graphql });
     if (confirm === undefined) {
       return { ok: true, status: "planned", ...summary, subjects: plan.commits.map((commit) => commit.subject),
         next: `After explicit human approval: slipway release --confirm ${plan.candidate.slice(0, 12)}`

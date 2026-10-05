@@ -130,6 +130,12 @@ candidate.
    the remote), the base (the release branch on the remote), the commits between
    them, the declared checks, and any files under
    `migrationFinalization.artifactPaths` in that range. It publishes nothing.
+   `halfBuiltSpecs` lists each open Spec (the open, non-`programme` parent Issue of
+   an Issue a commit in the range served, by its `Issue:` trailer or `(#N)`) with
+   its closed and total Tickets, so the approver sees a partly delivered feature.
+   It only warns. Without a GitHub remote, or when `gh` cannot answer, it reads
+   `{ "checked": false, "reason": … }` and the release goes ahead; `--confirm`
+   checks again.
 2. After explicit human approval of that candidate, `slipway release --confirm
    <commit>` checks the exact commit out on its own under
    `~/.slipway/state/releases/checkouts`, prepares its dependencies and runs the

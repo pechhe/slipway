@@ -1,3 +1,4 @@
+import type { GraphqlRunner, HalfBuiltSpecs } from "./release-specs.mjs";
 import type { VerificationDeclaration } from "./verification-policy.mjs";
 
 export type ReleasePlan = {
@@ -10,7 +11,7 @@ export type ReleasePlan = {
   base: string;
   /** The integration commit being released. */
   candidate: string;
-  commits: Array<{ commitId: string; subject: string }>;
+  commits: Array<{ commitId: string; subject: string; description: string }>;
   migrationArtifacts: string[];
   checks: VerificationDeclaration[];
 };
@@ -24,6 +25,8 @@ export type ReleaseSummary = {
   commits: number;
   migrationArtifacts: string[];
   checks: string[];
+  /** Open Specs with Tickets in the range; absent when the range is empty. */
+  halfBuiltSpecs?: HalfBuiltSpecs;
 };
 
 export type ReleaseResult =
@@ -36,5 +39,5 @@ export type ReleaseResult =
 export function planRelease(cwd?: string, options?: { candidate?: string }): Promise<ReleasePlan>;
 export function releaseIntegration(
   cwd?: string,
-  options?: { confirm?: string; migrationsReady?: boolean; onProgress?: (line: string) => void },
+  options?: { confirm?: string; migrationsReady?: boolean; onProgress?: (line: string) => void; graphql?: GraphqlRunner },
 ): Promise<ReleaseResult>;

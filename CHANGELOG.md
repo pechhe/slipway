@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Release:** the plan and `--confirm` output carry `halfBuiltSpecs`, the open
+  Specs with Tickets in the release range and how many of their Tickets are
+  closed. It warns only; when GitHub cannot be asked it says so and the release
+  proceeds.
 - **Claude Code plugin removed:** `claude-plugin/` is gone. Drop its folder from
   `CLAUDE_CODE_PLUGIN_DIRS` if you still load it.
 
