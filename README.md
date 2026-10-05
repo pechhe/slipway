@@ -139,14 +139,20 @@ candidate.
 2. After explicit human approval of that candidate, `slipway release --confirm
    <commit>` checks the exact commit out on its own under
    `~/.slipway/state/releases/checkouts`, prepares its dependencies and runs the
-   checks inside the repository's verification slot. The candidate must already be
-   published on the integration branch.
+   checks inside the repository's release slot. Releases queue on each other, not
+   on landings: landing continues while a release verifies. The candidate must
+   already be published on the integration branch.
 3. It builds the merge `Release <integration> to <release>` (parents: base, then
    candidate; a `Release-Candidate:` trailer) and refuses unless the merge is
    conflict-free and its tree is the candidate's, so a release branch with changes
    the integration branch lacks is refused rather than merged.
 4. It pushes the release branch, refusing if the remote moved since the plan, and
    records the release in `~/.slipway/state/releases`.
+
+`land` and `release --confirm` each append one line to
+`~/.slipway/state/metrics/landings.jsonl` or `releases.jsonl`: stage durations in
+milliseconds (`queued` is time waiting for another landing's slot), the outcome,
+and for a release its verification time.
 
 A release whose range carries migration artifacts also needs `--migrations-ready`:
 apply those migrations where the release branch deploys first. slipway never

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Release no longer blocks landing:** `release --confirm` verifies in its own
+  release slot. Before, it held the landing slot for its whole verification, so
+  every landing in the repository queued behind it.
+- **Timing metrics:** `land` reports a `queued` stage when it waits for another
+  landing, and `land` and `release --confirm` append their timings to
+  `~/.slipway/state/metrics/{landings,releases}.jsonl`.
+
 ## v1.5.0
 
 - **Release:** the plan and `--confirm` output carry `halfBuiltSpecs`, the open

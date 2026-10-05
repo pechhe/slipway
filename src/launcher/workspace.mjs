@@ -26,11 +26,12 @@ import {
 } from "../lib/peach-workspace.mjs";
 import { legacyStateHome } from "../lib/workspace-paths.mjs";
 import { landingGuardDecision } from "../lib/landing-guard.mjs";
-import { landingTimingLine } from "../lib/landing-timing.mjs";
+import { landingTimingLine, landingTimingRecord } from "../lib/landing-timing.mjs";
+import { appendMetric } from "../lib/metrics.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import { setPriority } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 /** Disk use of a checkout, for spotting retained workspaces worth reclaiming. */
 function diskUsage(root) {
@@ -249,7 +250,9 @@ try {
       postLandRunner: [process.execPath, process.argv[1], "post-land-run"],
     });
     // stderr, so stdout stays the JSON result.
-    console.error(landingTimingLine({ ...timing, finishedAt: Date.now() }, result));
+    const finished = { ...timing, finishedAt: Date.now() };
+    console.error(landingTimingLine(finished, result));
+    await appendMetric("landings", { workspace: basename(process.cwd()), ...landingTimingRecord(finished, result) });
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
       ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));

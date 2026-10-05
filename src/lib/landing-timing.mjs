@@ -12,17 +12,31 @@ function finalizationLabel(postIntegration) {
  * `stages` are `[name, epochMs]` marks from `onStage`; the landing result's
  * `timings` adds finalization and publication. Each stage ends where the next starts.
  */
-export function landingTimingLine({ startedAt, finishedAt, stages }, result) {
+function stageDurations({ finishedAt, stages }, result) {
   const marks = [...stages];
   const timings = result?.timings;
   if (timings) {
     marks.push(["finalizing", timings.finalizingStartedAt]);
     if (result.postIntegration?.ok) marks.push(["publishing", timings.publishingStartedAt]);
   }
-  const parts = marks.map(([stage, at], index) => {
+  return marks.map(([stage, at], index) => {
     const end = index + 1 < marks.length ? marks[index + 1][1] : timings?.finishedAt ?? finishedAt;
-    const line = `${stage} ${seconds(end - at)}`;
+    return [stage, Math.max(0, end - at)];
+  });
+}
+
+export function landingTimingLine(timing, result) {
+  const parts = stageDurations(timing, result).map(([stage, ms]) => {
+    const line = `${stage} ${seconds(ms)}`;
     return stage === "finalizing" ? `${line} (${finalizationLabel(result.postIntegration)})` : line;
   });
-  return `[land] ${[...parts, `total ${seconds(finishedAt - startedAt)}`].join(" · ")}`;
+  return `[land] ${[...parts, `total ${seconds(timing.finishedAt - timing.startedAt)}`].join(" · ")}`;
+}
+
+/** The same figures as `landingTimingLine`, as one metrics record in milliseconds. */
+export function landingTimingRecord(timing, result) {
+  const stagesMs = {};
+  for (const [stage, ms] of stageDurations(timing, result)) stagesMs[stage] = (stagesMs[stage] ?? 0) + ms;
+  return { ok: Boolean(result?.ok), totalMs: timing.finishedAt - timing.startedAt, stagesMs,
+    ...(result?.postIntegration?.status ? { finalization: result.postIntegration.status } : {}) };
 }

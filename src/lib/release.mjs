@@ -19,6 +19,7 @@ import { runRequiredVerification } from "./required-verification.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { run, workspaceContext } from "./workspace-jj.mjs";
 import { stateHome } from "./workspace-paths.mjs";
+import { appendMetric } from "./metrics.mjs";
 
 const COMMIT_PREFIX = /^[a-f0-9]{12,64}$/;
 const releaseHome = () => join(stateHome(), "releases");
@@ -113,7 +114,11 @@ async function verifyCandidate(plan, onProgress) {
     onProgress(`[release] preparing dependencies for ${short}`);
     await prepareWorkspaceDependencies(checkout, { quiet: true });
     return await runRequiredVerification({ checks: plan.checks, root: checkout, onProgress,
-      slot: { scope: plan.integrationRoot, label: `release ${short}` } });
+      // Releases queue on their own slot: a release verifies a pinned candidate in
+      // its own checkout and only touches the release branch, so nothing a landing
+      // does can invalidate it. Sharing the landing slot made every landing wait
+      // out a whole release verification.
+      slot: { scope: `${plan.integrationRoot}#release`, label: `release ${short}` } });
   } finally {
     const workingCopy = await commitOf(plan.root, `${symbol(name)}@`);
     await jjRun(plan.root, ["workspace", "forget", name]);
@@ -163,7 +168,18 @@ async function publish(plan, merge) {
  * candidate commit a human approved; `migrationsReady` acknowledges that the
  * release's migration artifacts are already applied where it deploys.
  */
-export async function releaseIntegration(cwd = process.cwd(), { confirm, migrationsReady = false, onProgress = () => {}, graphql } = {}) {
+export async function releaseIntegration(cwd = process.cwd(), options = {}) {
+  const startedAt = Date.now();
+  const measured = {};
+  const result = await releaseIntegrationUnmeasured(cwd, options, (verifyMs) => { measured.verifyMs = verifyMs; });
+  if (options.confirm !== undefined) {
+    await appendMetric("releases", { status: result.status, candidate: result.candidate ?? options.confirm,
+      commits: result.commits ?? null, totalMs: Date.now() - startedAt, ...measured });
+  }
+  return result;
+}
+
+async function releaseIntegrationUnmeasured(cwd, { confirm, migrationsReady = false, onProgress = () => {}, graphql } = {}, onVerified = () => {}) {
   try {
     const plan = await planRelease(cwd, confirm === undefined ? {} : { candidate: confirm });
     const summary = { integrationBranch: plan.integrationBranch, releaseBranch: plan.releaseBranch, remote: plan.remote,
@@ -182,7 +198,8 @@ export async function releaseIntegration(cwd = process.cwd(), { confirm, migrati
     if (plan.migrationArtifacts.length && !migrationsReady) {
       refuse(`This release carries migration artifacts (${plan.migrationArtifacts.join(", ")}). Apply them where ${plan.releaseBranch} deploys, then rerun with --migrations-ready.`);
     }
-    const verification = await verifyCandidate(plan, onProgress);
+    const verifyStarted = Date.now();
+    const verification = await verifyCandidate(plan, onProgress).finally(() => onVerified(Date.now() - verifyStarted));
     // The base must still be what was planned: a moved release branch needs a new plan.
     await fetch(plan.root, plan.remote, plan.releaseBranch);
     const base = await commitOf(plan.root, `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`);

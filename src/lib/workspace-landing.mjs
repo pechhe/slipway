@@ -74,8 +74,16 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // One landing at a time holds this repository's slot from fetch through push, so
   // the integration branch cannot move between this landing's rebase and bookmark.
   // The workspace's writer key serializes this landing with cleanup of the same checkout.
-  const result = await withVerificationSlot(() => withWorkspaceTransaction(`writer:${context.current.name}`, () => landInSlot(cwd, context, remote, options)),
-    waitForLandingSlot(context, onProgress));
+  // "queued" marks time spent waiting for another landing; "fetching" marks the slot acquired.
+  const slot = waitForLandingSlot(context, onProgress);
+  let queued = false;
+  const result = await withVerificationSlot(() => {
+    if (queued) options.onStage?.("fetching");
+    return withWorkspaceTransaction(`writer:${context.current.name}`, () => landInSlot(cwd, context, remote, options));
+  }, { ...slot, onWait: (status) => {
+    if (!queued) { queued = true; options.onStage?.("queued"); }
+    slot.onWait(status);
+  } });
   // Started outside the landing slot, so an in-process run queues on its own.
   const started = { ...result, ...await startPostLand(cwd, context, result, options.postLandRunner, options.postLandEnvironment ?? options.environment) };
   // Release other disposable checkouts after every CLI/extension landing. A host
