@@ -34,7 +34,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {
-    "effect": "4.0.0",
+    "effect": "4.0.1",
     "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
