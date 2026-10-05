@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.6.0
 
 - **Release no longer blocks landing:** `release --confirm` verifies in its own
   release slot. Before, it held the landing slot for its whole verification, so
