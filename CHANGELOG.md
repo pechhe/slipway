@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.0
 
 - **Release:** the plan and `--confirm` output carry `halfBuiltSpecs`, the open
   Specs with Tickets in the release range and how many of their Tickets are
