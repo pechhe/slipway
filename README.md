@@ -139,9 +139,13 @@ candidate.
 2. After explicit human approval of that candidate, `slipway release --confirm
    <commit>` checks the exact commit out on its own under
    `~/.slipway/state/releases/checkouts`, prepares its dependencies and runs the
-   checks inside the repository's release slot. Releases queue on each other, not
-   on landings: landing continues while a release verifies. The candidate must
-   already be published on the integration branch.
+   checks inside the repository's release slot, which it holds until it has
+   published. Landing continues while a release verifies. A release confirmed
+   while another holds the slot is refused at once (`Another release (…) is
+   running`): the running one moves the release branch, so the second could only
+   be refused after its own verification. Rerun it, with a fresh plan, once the
+   first finishes. The candidate must already be published on the integration
+   branch.
 3. It builds the merge `Release <integration> to <release>` (parents: base, then
    candidate; a `Release-Candidate:` trailer) and refuses unless the merge is
    conflict-free and its tree is the candidate's, so a release branch with changes

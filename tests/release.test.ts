@@ -133,6 +133,37 @@ test("a landing does not wait for a release verification", async () => {
   }
 });
 
+test("a release started while another verifies is refused at once", async () => {
+  const started = { file: "" };
+  const go = { file: "" };
+  const f = await releaseProject({ checks: (verified) => {
+    started.file = `${verified}.started`;
+    go.file = `${verified}.go`;
+    const script = `const fs=require("fs");fs.writeFileSync(${JSON.stringify(started.file)},"");`
+      + `const end=Date.now()+20000;while(!fs.existsSync(${JSON.stringify(go.file)})&&Date.now()<end){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)}`;
+    return [{ executable: "node", args: ["-e", script] }];
+  } });
+  try {
+    const first = await landFile(f, "feature.txt");
+    let firstSettled = false;
+    const release = releaseIntegration(f.repo, { confirm: first }).finally(() => { firstSettled = true; });
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      if (await readFile(started.file).then(() => true, () => false)) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const second = await landFile(f, "later.txt");
+    const refused = await releaseIntegration(f.repo, { confirm: second });
+    assert.equal(firstSettled, false, "the second release waited for the first");
+    assert.equal(refused.status, "refused", JSON.stringify(refused));
+    assert.ok(!refused.ok && /Another release \(release [a-f0-9]{12}\) is running/.test(refused.reason), refused.reason);
+    await writeFile(go.file, "");
+    assert.equal((await release).status, "released");
+  } finally {
+    await writeFile(go.file, "").catch(() => {});
+    await f.dispose();
+  }
+});
+
 test("a candidate that is not published on the integration branch is refused", async () => {
   const f = await releaseProject();
   try {

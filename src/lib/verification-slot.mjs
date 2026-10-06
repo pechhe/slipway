@@ -36,6 +36,15 @@ const readRecord = async (file) => {
   return null;
 };
 
+/** Thrown by `withVerificationSlot` with `wait: false` when another holder has the slot. */
+export class VerificationSlotBusyError extends Error {
+  constructor(holder) {
+    super(holder ? `The verification slot is held by ${holder}` : "The verification slot is held");
+    this.name = "VerificationSlotBusyError";
+    this.holder = holder;
+  }
+}
+
 /** One slot per integration root, so unrelated repositories never queue on each other. */
 const slotName = (scope) => scope
   ? `verification-slot-${createHash("sha256").update(String(scope)).digest("hex").slice(0, 16)}`
@@ -64,7 +73,8 @@ async function slotQueueStatus(target, waitingDir, own) {
  * The lock lives under the user's Pi home and goes stale a minute after its
  * holder dies. Without a `scope` the slot is machine-wide. `onWait` is called
  * when the landing starts waiting and whenever the number of landings ahead of
- * it (or the holder) changes.
+ * it (or the holder) changes. With `wait: false` it throws
+ * `VerificationSlotBusyError` instead of waiting.
  */
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
@@ -89,6 +99,7 @@ export async function withVerificationSlot(operation, options = {}) {
         });
       } catch (error) {
         if (error?.code !== "ELOCKED") throw error;
+        if (options.wait === false) throw new VerificationSlotBusyError((await readRecord(`${target}.holder.json`))?.label ?? null);
         if (!waiting) {
           waiting = true;
           await mkdir(waitingDir, { recursive: true, mode: 0o700 });

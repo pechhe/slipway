@@ -20,6 +20,7 @@ import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { run, workspaceContext } from "./workspace-jj.mjs";
 import { stateHome } from "./workspace-paths.mjs";
 import { appendMetric } from "./metrics.mjs";
+import { VerificationSlotBusyError, withVerificationSlot } from "./verification-slot.mjs";
 
 const COMMIT_PREFIX = /^[a-f0-9]{12,64}$/;
 const releaseHome = () => join(stateHome(), "releases");
@@ -113,17 +114,30 @@ async function verifyCandidate(plan, onProgress) {
     if (!plan.checks.length) return { passed: [], gaps: [] };
     onProgress(`[release] preparing dependencies for ${short}`);
     await prepareWorkspaceDependencies(checkout, { quiet: true });
-    return await runRequiredVerification({ checks: plan.checks, root: checkout, onProgress,
-      // Releases queue on their own slot: a release verifies a pinned candidate in
-      // its own checkout and only touches the release branch, so nothing a landing
-      // does can invalidate it. Sharing the landing slot made every landing wait
-      // out a whole release verification.
-      slot: { scope: `${plan.integrationRoot}#release`, label: `release ${short}` } });
+    // The caller holds the release slot, so this verification passes straight through it.
+    return await runRequiredVerification({ checks: plan.checks, root: checkout, onProgress });
   } finally {
     const workingCopy = await commitOf(plan.root, `${symbol(name)}@`);
     await jjRun(plan.root, ["workspace", "forget", name]);
     if (workingCopy) await jjRun(plan.root, ["abandon", workingCopy]);
     await rm(checkout, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Run a release's verification and publication in the repository's release slot,
+ * refusing at once when another release holds it: that release would move the
+ * release branch, so this one could only end refused after a whole verification.
+ * Releases have their own slot: a release verifies a pinned candidate in its own
+ * checkout and only touches the release branch, so landings never wait for it.
+ */
+async function holdReleaseSlot(plan, operation) {
+  try {
+    return await withVerificationSlot(operation,
+      { scope: `${plan.integrationRoot}#release`, label: `release ${plan.candidate.slice(0, 12)}`, wait: false });
+  } catch (error) {
+    if (!(error instanceof VerificationSlotBusyError)) throw error;
+    return refuse(`Another release${error.holder ? ` (${error.holder})` : ""} is running; rerun when it finishes`);
   }
 }
 
@@ -198,14 +212,17 @@ async function releaseIntegrationUnmeasured(cwd, { confirm, migrationsReady = fa
     if (plan.migrationArtifacts.length && !migrationsReady) {
       refuse(`This release carries migration artifacts (${plan.migrationArtifacts.join(", ")}). Apply them where ${plan.releaseBranch} deploys, then rerun with --migrations-ready.`);
     }
-    const verifyStarted = Date.now();
-    const verification = await verifyCandidate(plan, onProgress).finally(() => onVerified(Date.now() - verifyStarted));
-    // The base must still be what was planned: a moved release branch needs a new plan.
-    await fetch(plan.root, plan.remote, plan.releaseBranch);
-    const base = await commitOf(plan.root, `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`);
-    if (base !== plan.base) refuse(`${plan.releaseBranch}@${plan.remote} moved during the release; rerun it`);
-    const merge = await buildMerge(plan);
-    await publish(plan, merge);
+    const { merge, verification } = await holdReleaseSlot(plan, async () => {
+      const verifyStarted = Date.now();
+      const verification = await verifyCandidate(plan, onProgress).finally(() => onVerified(Date.now() - verifyStarted));
+      // The base must still be what was planned: a moved release branch needs a new plan.
+      await fetch(plan.root, plan.remote, plan.releaseBranch);
+      const base = await commitOf(plan.root, `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`);
+      if (base !== plan.base) refuse(`${plan.releaseBranch}@${plan.remote} moved during the release; rerun it`);
+      const merge = await buildMerge(plan);
+      await publish(plan, merge);
+      return { merge, verification };
+    });
     const record = { ...summary, merge, verification, releasedAt: new Date().toISOString() };
     await mkdir(releaseHome(), { recursive: true });
     await writeFile(join(releaseHome(), `${record.releasedAt.replace(/[:.]/g, "-")}-${plan.candidate.slice(0, 12)}.json`), `${JSON.stringify(record, null, 2)}\n`);

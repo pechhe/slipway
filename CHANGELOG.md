@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Second release refused at once:** `release --confirm` holds the release slot
+  from verification through publication, and a release confirmed while another
+  holds it is refused immediately. Before, it queued behind the running release,
+  verified for its full length and was then refused because the release branch
+  had moved.
+
 ## v1.6.0
 
 - **Release no longer blocks landing:** `release --confirm` verifies in its own
