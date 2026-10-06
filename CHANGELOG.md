@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.8.0
 
 - **Declared project code:** `slipway.json` may set `projectCode` (2-8 lowercase
   letters or digits) to name workspaces regardless of the checkout folder, so
