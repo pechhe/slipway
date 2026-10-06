@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.7.0
 
 - **Second release refused at once:** `release --confirm` holds the release slot
   from verification through publication, and a release confirmed while another
