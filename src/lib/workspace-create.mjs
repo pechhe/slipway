@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { legacyIssueWorkspaceName, parseWorkspaceList, repositoryProjectCode, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext } from "./workspace-jj.mjs";
-import { workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
+import { startFetchHome, workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import {
   assertIssueAvailable,
   assertWorkspaceMutationAllowed,
@@ -293,18 +294,31 @@ async function ready({ hooks, context, issueNumber, prepared, workspace }) {
 }
 
 const START_FETCH_TIMEOUT_MS = 30_000;
+const START_FETCH_REUSE_MS = 30_000;
 
 /**
  * Bring the integration branch up to its declared remote before a new workspace
  * is based on it, so work started on one machine sees what another has landed.
- * Best effort: offline or failing, the workspace starts from the local branch and
- * landing still fetches and rebases.
+ * A start within `START_FETCH_REUSE_MS` of the last successful one reuses that
+ * fetch, so a burst of starts fetches once. Best effort: offline or failing, the
+ * workspace starts from the local branch and landing still fetches and rebases.
+ * Runs under the allocation lock, so the marker needs no locking of its own.
  */
 async function refreshIntegration(context) {
   const remote = publicationRemote(context);
   if (!remote) return;
+  const key = `${resolve(context.integration.root)}\0${remote}\0${context.integrationBranch}`;
+  const marker = join(startFetchHome(), `${createHash("sha256").update(key).digest("hex")}.stamp`);
+  const fetchedAt = await stat(marker).then((info) => info.mtimeMs, () => 0);
+  // A marker from the future (the clock moved back) proves nothing.
+  const age = Date.now() - fetchedAt;
+  if (age >= 0 && age < START_FETCH_REUSE_MS) return;
   const fetched = await fetchIntegration(context.integration.root, remote, context.integrationBranch, { timeoutMs: START_FETCH_TIMEOUT_MS });
-  if (fetched.code === 0) return;
+  if (fetched.code === 0) {
+    await mkdir(startFetchHome(), { recursive: true, mode: 0o700 });
+    await writeFile(marker, "");
+    return;
+  }
   const detail = (fetched.stderr || fetched.stdout).trim().split(/\r?\n/).at(-1);
   console.error(`[fetch] could not refresh ${context.integrationBranch} from ${remote}${detail ? `: ${detail}` : ""}; starting from the local branch`);
 }

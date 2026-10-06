@@ -13,6 +13,7 @@ export function workspaceHome(): string;
 export function workspaceStorageHomes(): string[];
 export function modePath(): string;
 export function stateHome(): string;
+export function startFetchHome(): string;
 export function lockHome(): string;
 export function metadataHome(): string;
 export function landedHome(): string;

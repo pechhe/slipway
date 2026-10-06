@@ -63,6 +63,9 @@ export const modePath = () => settled(join(slipwayHome(), "mode.json"));
 /** Machine-local landing state: top-level landing sidecars and verification slots. */
 export const stateHome = () => settled(join(slipwayHome(), "state"));
 
+/** When `start` last refreshed each integration branch from its remote. */
+export const startFetchHome = () => join(stateHome(), "start-fetches");
+
 /** Legacy per-workspace owner records and primary-checkout writer records. */
 export const lockHome = () => join(stateHome(), "locks");
 

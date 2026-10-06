@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.11.0
+
+- **A burst of starts fetches once:** `slipway start` skips its integration
+  fetch when the same branch was fetched from the same remote by a start in the
+  last 30 seconds, so a fleet starting several workspaces together pays for one
+  fetch. A workspace started in that window may sit up to 30 seconds behind the
+  remote; landing still fetches and rebases.
+
 ## v1.10.0
 
 - **Concurrent starts install in parallel:** `slipway start` (and
