@@ -1,9 +1,14 @@
 export const VERIFICATION_SLOT_ENV: "SLIPWAY_VERIFICATION_SLOT";
 export function verificationSlotEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
-export class VerificationSlotBusyError extends Error {
-  /** The holder's label, or null when it is not (yet) recorded. */
-  holder: string | null;
-}
+/** A live contender's record: the holder's, or a waiter's (one its waiter still touches). */
+export type VerificationSlotRecord = {
+  id: string;
+  pid: number;
+  since: number;
+  label: string | null;
+  /** Fields the contender passed as `record`. */
+  [field: string]: unknown;
+};
 export function withVerificationSlot<T>(
   operation: () => Promise<T>,
   options?: {
@@ -12,11 +17,21 @@ export function withVerificationSlot<T>(
     /** The integration root this landing serializes on; omitted, the slot is machine-wide. */
     scope?: string;
     pollMs?: number;
-    /** false: throw VerificationSlotBusyError instead of waiting for the holder. */
-    wait?: boolean;
     signal?: AbortSignal;
     /** This landing's name, shown to landings waiting behind it as `holder`. */
     label?: string;
+    /** Structured fields added to this contender's holder and waiting records. */
+    record?: Record<string, unknown>;
+    /**
+     * Asked before each attempt and again once the slot is taken: true stands
+     * aside this round (handing back a slot just taken). `waiters` excludes `own`,
+     * oldest first; records of dead processes are gone.
+     */
+    yieldTo?: (status: {
+      own: VerificationSlotRecord;
+      holder: VerificationSlotRecord | null;
+      waiters: VerificationSlotRecord[];
+    }) => boolean | Promise<boolean>;
     onWait?: (status: { ahead: number; holder: string | null }) => void;
   },
 ): Promise<T>;

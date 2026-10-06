@@ -6,6 +6,7 @@
  * artifacts and any half-built Specs (warned about, never refused). With `confirm`, the candidate commit id a human approved, it checks
  * that exact commit out on its own, runs `requiredReleaseVerification`, builds the
  * release merge, refuses unless its tree is the verified tree, and publishes it.
+ * Concurrent confirms coalesce: see `holdReleaseSlot`.
  *
  * jj commands ignore working copies, except creating the verification checkout,
  * which snapshots only the checkout the release runs from.
@@ -20,9 +21,10 @@ import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
 import { run, workspaceContext } from "./workspace-jj.mjs";
 import { stateHome } from "./workspace-paths.mjs";
 import { appendMetric } from "./metrics.mjs";
-import { VerificationSlotBusyError, withVerificationSlot } from "./verification-slot.mjs";
+import { withVerificationSlot } from "./verification-slot.mjs";
 
 const COMMIT_PREFIX = /^[a-f0-9]{12,64}$/;
+const CANDIDATE_TRAILER = "Release-Candidate: ";
 const releaseHome = () => join(stateHome(), "releases");
 
 class ReleaseRefusal extends Error {
@@ -125,26 +127,94 @@ async function verifyCandidate(plan, onProgress) {
 }
 
 /**
- * Run a release's verification and publication in the repository's release slot,
- * refusing at once when another release holds it: that release would move the
- * release branch, so this one could only end refused after a whole verification.
+ * Run a release's verification and publication in the repository's release slot.
  * Releases have their own slot: a release verifies a pinned candidate in its own
  * checkout and only touches the release branch, so landings never wait for it.
+ *
+ * Candidates sit on the linear integration branch, so of any two one contains the
+ * other, and a release of the newer ships both. A confirm therefore never refuses
+ * a busy slot: it waits, standing aside for every waiting release whose candidate
+ * contains its own, so of several waiters only the newest verifies. The operation
+ * re-reads the release branch once it holds the slot; what the release it waited
+ * for already shipped needs no verification. A dead contender's records and lock
+ * go stale as for any verification slot, so they never block.
+ *
+ * Resolves to null, without the slot, when the release branch already contains
+ * the candidate while another release holds the slot or outranks this one: the
+ * release it waited for shipped it, and waiting behind the next cannot add to that.
  */
-async function holdReleaseSlot(plan, operation) {
+async function holdReleaseSlot(plan, onProgress, operation) {
+  const ours = plan.candidate;
+  const short = (commit) => commit.slice(0, 12);
+  const containment = new Map();
+  let fetched = false;
+  // Whether `theirs` contains ours. A candidate published after this plan's fetch is fetched once.
+  const contains = async (theirs) => {
+    if (typeof theirs !== "string" || !/^[a-f0-9]{40,64}$/.test(theirs)) return false;
+    if (theirs === ours) return true;
+    if (!containment.has(theirs)) {
+      if (!await commitOf(plan.root, theirs)) {
+        if (fetched) return false;
+        fetched = true;
+        await fetch(plan.root, plan.remote, plan.integrationBranch);
+        if (!await commitOf(plan.root, theirs)) return false;
+      }
+      containment.set(theirs, Boolean(await commitOf(plan.root, `${ours} & ::${theirs}`)));
+    }
+    return containment.get(theirs);
+  };
+  const earlier = (record, own) => record.since < own.since || (record.since === own.since && record.id < own.id);
+  const released = `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`;
+  const shipped = new AbortController();
+  let reported = "";
   try {
-    return await withVerificationSlot(operation,
-      { scope: `${plan.integrationRoot}#release`, label: `release ${plan.candidate.slice(0, 12)}`, wait: false });
+    return await withVerificationSlot(operation, {
+    scope: `${plan.integrationRoot}#release`,
+    label: `release ${short(ours)}`,
+    record: { candidate: ours },
+    signal: shipped.signal,
+    yieldTo: async ({ own, holder, waiters }) => {
+      // Stand aside for a waiter that ships ours: newer, or the same candidate confirmed earlier.
+      let newer = null;
+      for (const waiter of waiters) {
+        if (await contains(waiter.candidate) && (waiter.candidate !== ours || earlier(waiter, own))) newer = waiter;
+      }
+      // Waiting behind anyone, report a candidate the release branch already holds instead.
+      // Publishing fetched the release branch into the shared repository, so no fetch is needed to see it.
+      if ((newer || holder) && await commitOf(plan.root, `${ours} & ::${released}`)) {
+        shipped.abort();
+        return true;
+      }
+      const attached = holder && await contains(holder.candidate) ? holder : newer;
+      const awaited = attached ?? holder;
+      if (awaited) {
+        const name = typeof awaited.candidate === "string" ? `release ${short(awaited.candidate)}` : awaited.label ?? "another release";
+        const line = `[release] waiting for ${name} ${attached ? `(contains ${short(ours)})` : `to finish before ${short(ours)}`}`;
+        if (line !== reported) onProgress(reported = line);
+      }
+      return Boolean(newer);
+    },
+    });
   } catch (error) {
-    if (!(error instanceof VerificationSlotBusyError)) throw error;
-    return refuse(`Another release${error.holder ? ` (${error.holder})` : ""} is running; rerun when it finishes`);
+    if (shipped.signal.aborted) return null;
+    throw error;
   }
 }
 
+/** The release merge on the release branch that first shipped `plan.candidate`, and its candidate. */
+async function shippedBy(plan) {
+  const released = `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`;
+  const [found] = await commitIds(plan.root,
+    `roots(merges() & ${plan.candidate}:: & ::${released} & description(substring:${symbol(CANDIDATE_TRAILER)}))`);
+  const merge = found ?? plan.base;
+  const description = await jjOut(plan.root, ["log", "--no-graph", "-r", merge, "-T", "description"]);
+  return { merge, releasedBy: description.match(/^Release-Candidate: ([a-f0-9]+)$/m)?.[1] ?? null };
+}
+
 const releaseMessage = (plan) =>
-  `Release ${plan.integrationBranch} to ${plan.releaseBranch}\n\nRelease-Candidate: ${plan.candidate}\n`;
+  `Release ${plan.integrationBranch} to ${plan.releaseBranch}\n\n${CANDIDATE_TRAILER}${plan.candidate}\n`;
 const mergeRevset = (plan) =>
-  `children(${plan.base}) & children(${plan.candidate}) & description(substring:${symbol(`Release-Candidate: ${plan.candidate}`)})`;
+  `children(${plan.base}) & children(${plan.candidate}) & description(substring:${symbol(`${CANDIDATE_TRAILER}${plan.candidate}`)})`;
 
 /** Build the release merge; refuse unless it is conflict-free and its tree is the candidate's. */
 async function buildMerge(plan) {
@@ -193,37 +263,65 @@ export async function releaseIntegration(cwd = process.cwd(), options = {}) {
   return result;
 }
 
+/** The result fields describing `plan`; the Spec check runs again on every call, as a Spec's Tickets may have closed in between. */
+async function describePlan(plan, graphql) {
+  const summary = { integrationBranch: plan.integrationBranch, releaseBranch: plan.releaseBranch, remote: plan.remote,
+    base: plan.base, candidate: plan.candidate, commits: plan.commits.length, migrationArtifacts: plan.migrationArtifacts,
+    checks: plan.checks.map((check) => [check.executable, ...check.args].join(" ")) };
+  if (!plan.commits.length) return summary;
+  const remotes = await jjRun(plan.root, ["git", "remote", "list"]);
+  summary.halfBuiltSpecs = await halfBuiltSpecs(remotes.code === 0 ? githubRepository(remotes.stdout, plan.remote) : null,
+    plan.commits.map((commit) => commit.description), { graphql });
+  return summary;
+}
+
 async function releaseIntegrationUnmeasured(cwd, { confirm, migrationsReady = false, onProgress = () => {}, graphql } = {}, onVerified = () => {}) {
   try {
     const plan = await planRelease(cwd, confirm === undefined ? {} : { candidate: confirm });
-    const summary = { integrationBranch: plan.integrationBranch, releaseBranch: plan.releaseBranch, remote: plan.remote,
-      base: plan.base, candidate: plan.candidate, commits: plan.commits.length, migrationArtifacts: plan.migrationArtifacts,
-      checks: plan.checks.map((check) => [check.executable, ...check.args].join(" ")) };
-    if (!plan.commits.length) return { ok: true, status: "up_to_date", ...summary };
-    // Re-read on every plan and confirm: a Spec's Tickets may have closed in between.
-    const remotes = await jjRun(plan.root, ["git", "remote", "list"]);
-    summary.halfBuiltSpecs = await halfBuiltSpecs(remotes.code === 0 ? githubRepository(remotes.stdout, plan.remote) : null,
-      plan.commits.map((commit) => commit.description), { graphql });
+    if (!plan.commits.length) return { ok: true, status: "up_to_date", ...await describePlan(plan, graphql) };
+    const summary = await describePlan(plan, graphql);
     if (confirm === undefined) {
       return { ok: true, status: "planned", ...summary, subjects: plan.commits.map((commit) => commit.subject),
         next: `After explicit human approval: slipway release --confirm ${plan.candidate.slice(0, 12)}`
           + (plan.migrationArtifacts.length ? " --migrations-ready (once these migrations are applied where the release deploys)" : "") };
     }
-    if (plan.migrationArtifacts.length && !migrationsReady) {
-      refuse(`This release carries migration artifacts (${plan.migrationArtifacts.join(", ")}). Apply them where ${plan.releaseBranch} deploys, then rerun with --migrations-ready.`);
-    }
-    const { merge, verification } = await holdReleaseSlot(plan, async () => {
-      const verifyStarted = Date.now();
-      const verification = await verifyCandidate(plan, onProgress).finally(() => onVerified(Date.now() - verifyStarted));
-      // The base must still be what was planned: a moved release branch needs a new plan.
+    const requireMigrationsReady = (current) => {
+      if (current.migrationArtifacts.length && !migrationsReady) {
+        refuse(`This release carries migration artifacts (${current.migrationArtifacts.join(", ")}). Apply them where ${current.releaseBranch} deploys, then rerun with --migrations-ready.`);
+      }
+    };
+    requireMigrationsReady(plan);
+    // What the release branch already holds needs no slot and no verification; null when it lacks the candidate.
+    const alreadyShipped = async (current) =>
+      current.commits.length ? null : { summary: await describePlan(current, graphql), ...await shippedBy(current) };
+    const inSlot = async () => {
+      // A release that waited finds the release branch moved by the one it waited for: plan again against it.
       await fetch(plan.root, plan.remote, plan.releaseBranch);
-      const base = await commitOf(plan.root, `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`);
-      if (base !== plan.base) refuse(`${plan.releaseBranch}@${plan.remote} moved during the release; rerun it`);
-      const merge = await buildMerge(plan);
-      await publish(plan, merge);
-      return { merge, verification };
-    });
-    const record = { ...summary, merge, verification, releasedAt: new Date().toISOString() };
+      const moved = await commitOf(plan.root, `${symbol(plan.releaseBranch)}@${symbol(plan.remote)}`) !== plan.base;
+      const current = moved ? await planRelease(cwd, { candidate: plan.candidate }) : plan;
+      const shippedOutcome = await alreadyShipped(current);
+      if (shippedOutcome) return shippedOutcome;
+      const described = moved ? await describePlan(current, graphql) : summary;
+      requireMigrationsReady(current);
+      const verifyStarted = Date.now();
+      const verification = await verifyCandidate(current, onProgress).finally(() => onVerified(Date.now() - verifyStarted));
+      // The base must still be what was planned: a moved release branch needs a new plan.
+      await fetch(current.root, current.remote, current.releaseBranch);
+      const base = await commitOf(current.root, `${symbol(current.releaseBranch)}@${symbol(current.remote)}`);
+      if (base !== current.base) refuse(`${current.releaseBranch}@${current.remote} moved during the release; rerun it`);
+      const merge = await buildMerge(current);
+      await publish(current, merge);
+      return { summary: described, merge, verification };
+    };
+    let outcome = null;
+    // A release that stood aside because its candidate shipped confirms that against a fresh plan.
+    while (!outcome) outcome = await holdReleaseSlot(plan, onProgress, inSlot) ?? await alreadyShipped(await planRelease(cwd, { candidate: plan.candidate }));
+    if ("releasedBy" in outcome) {
+      onProgress(`[release] ${plan.candidate.slice(0, 12)} is already on ${plan.releaseBranch}`
+        + (outcome.releasedBy ? `, released by ${outcome.releasedBy.slice(0, 12)}` : ""));
+      return { ok: true, status: "released_by", ...outcome.summary, merge: outcome.merge, releasedBy: outcome.releasedBy };
+    }
+    const record = { ...outcome.summary, merge: outcome.merge, verification: outcome.verification, releasedAt: new Date().toISOString() };
     await mkdir(releaseHome(), { recursive: true });
     await writeFile(join(releaseHome(), `${record.releasedAt.replace(/[:.]/g, "-")}-${plan.candidate.slice(0, 12)}.json`), `${JSON.stringify(record, null, 2)}\n`);
     return { ok: true, status: "released", ...record };

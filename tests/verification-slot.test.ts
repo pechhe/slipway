@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "vite-plus/test";
@@ -202,4 +202,72 @@ test("a waiting record left by a dead landing is purged and never counted as ahe
     assert.ok(!(await readdir(waitingDir)).includes("dead.json"), "dead record is removed");
     holderHeld.resolve();
     await Promise.all([holder, waiter]);
+  }));
+
+test("a yielding contender stands aside for a waiter it defers to, handing back a slot it took first", () =>
+  withSlotFixture("yield", async ({ root, env, track }) => {
+    const events: string[] = [];
+    // A waiter that outranks the contender but never takes the slot itself.
+    const waitingDir = path.join(root, "verification-slot.waiting");
+    await mkdir(waitingDir, { recursive: true });
+    const outranking = path.join(waitingDir, "outranking.json");
+    await writeFile(outranking, JSON.stringify({ id: "outranking", pid: process.pid, since: 0, label: "jj:outranking", rank: 2 }));
+    let asked = 0;
+    const seen: unknown[] = [];
+    const deferring = signal();
+    const contender = track(withVerificationSlot(async () => { events.push("contender"); }, {
+      root, env, pollMs: 10, label: "jj:contender", record: { rank: 1 },
+      yieldTo: ({ own, waiters }) => {
+        seen.push(own.rank);
+        asked += 1;
+        // The first answer misses the waiter, as when it arrives just before the lock is taken.
+        if (asked === 1) return false;
+        if (asked >= 3) deferring.resolve();
+        return waiters.some((waiter) => (waiter.rank as number) > (own.rank as number));
+      },
+    }));
+    await deferring.promise;
+    // The contender took the slot, handed it back and still defers: the slot is free.
+    await track(withVerificationSlot(async () => { events.push("other"); }, {
+      root, env, pollMs: 10, onWait: () => assert.fail("the slot was not handed back"),
+    }));
+    await rm(outranking);
+    await contender;
+    assert.deepEqual(events, ["other", "contender"]);
+    assert.ok(seen.every((rank) => rank === 1), "the hook sees its own structured record");
+  }));
+
+test("a holder's record carries its structured fields to the contenders waiting behind it", () =>
+  withSlotFixture("record", async ({ root, env, track, hold }) => {
+    const holderHeld = hold();
+    const holding = signal();
+    track(withVerificationSlot(async () => { holding.resolve(); await holderHeld.promise; }, {
+      root, env, pollMs: 10, label: "release a", record: { candidate: "a".repeat(40) },
+    }));
+    await holding.promise;
+    const holders = signal<unknown>();
+    const waiter = track(withVerificationSlot(async () => {}, {
+      root, env, pollMs: 10, record: { candidate: "b".repeat(40) },
+      yieldTo: ({ holder }) => { if (holder) holders.resolve(holder.candidate); return false; },
+    }));
+    assert.equal(await holders.promise, "a".repeat(40));
+    holderHeld.resolve();
+    await waiter;
+  }));
+
+test("a yielding contender ignores a waiting record its waiter stopped touching", () =>
+  withSlotFixture("stale", async ({ root, env }) => {
+    // A live pid, as a stopped session or a reused pid would leave it, but untouched for two minutes.
+    const waitingDir = path.join(root, "verification-slot.waiting");
+    await mkdir(waitingDir, { recursive: true });
+    const stale = path.join(waitingDir, "stale.json");
+    await writeFile(stale, JSON.stringify({ id: "stale", pid: process.pid, since: 0, label: "jj:stale", rank: 2 }));
+    const past = new Date(Date.now() - 120_000);
+    await utimes(stale, past, past);
+    const ran = await withVerificationSlot(async () => "ran", {
+      root, env, pollMs: 10, record: { rank: 1 },
+      yieldTo: ({ own, waiters }) => waiters.some((waiter) => (waiter.rank as number) > (own.rank as number)),
+    });
+    assert.equal(ran, "ran");
+    assert.ok(!(await readdir(waitingDir)).includes("stale.json"), "the stale record is removed");
   }));

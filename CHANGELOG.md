@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.9.0
+
+- **Concurrent releases coalesce:** a `release --confirm` made while another
+  release runs is no longer refused. It waits for the release slot, naming the
+  release it waits for, and stands aside for any waiting confirm whose candidate
+  contains its own, so only the newest candidate verifies. A candidate the
+  release it waited for shipped returns `"status": "released_by"` (with `merge`
+  and `releasedBy`) without verifying; otherwise, holding the slot, it plans
+  again against the moved base and verifies and publishes. Slot waiting records
+  carry a structured `candidate` and stop counting when their waiter has not
+  polled for a minute. This replaces v1.7.0's refusal, which left concurrent sessions
+  retrying against each other.
+
 ## v1.8.0
 
 - **Declared project code:** `slipway.json` may set `projectCode` (2-8 lowercase

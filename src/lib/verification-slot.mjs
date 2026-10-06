@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
@@ -36,13 +36,25 @@ const readRecord = async (file) => {
   return null;
 };
 
-/** Thrown by `withVerificationSlot` with `wait: false` when another holder has the slot. */
-export class VerificationSlotBusyError extends Error {
-  constructor(holder) {
-    super(holder ? `The verification slot is held by ${holder}` : "The verification slot is held");
-    this.name = "VerificationSlotBusyError";
-    this.holder = holder;
+// A waiter touches its record on every poll. One untouched for as long as the
+// lock takes to go stale belongs to a stopped process (or a reused pid), so it no
+// longer counts: a contender that yields to waiters is never held up by it.
+const STALE_MS = 60_000;
+const readWaitingRecord = async (file) => {
+  const modified = await stat(file).then((stats) => stats.mtimeMs, () => null);
+  if (modified === null) return null;
+  if (Date.now() - modified > STALE_MS) {
+    await rm(file, { force: true }).catch(() => {});
+    return null;
   }
+  return await readRecord(file);
+};
+
+/** Replace `file` whole, so a reader never sees a half-written record. */
+async function writeRecord(file, record) {
+  const partial = `${file}.${record.id}.partial`;
+  await writeFile(partial, JSON.stringify(record), { mode: 0o600 });
+  await rename(partial, file);
 }
 
 /** One slot per integration root, so unrelated repositories never queue on each other. */
@@ -50,19 +62,24 @@ const slotName = (scope) => scope
   ? `verification-slot-${createHash("sha256").update(String(scope)).digest("hex").slice(0, 16)}`
   : "verification-slot";
 
+/** The live holder and the live waiters other than `own`, oldest first. */
+async function slotRecords(target, waitingDir, own) {
+  const holder = await readRecord(`${target}.holder.json`);
+  const names = await readdir(waitingDir).catch(() => []);
+  const waiters = (await Promise.all(names.filter((name) => name.endsWith(".json") && name !== `${own.id}.json`)
+    .map((name) => readWaitingRecord(join(waitingDir, name))))).filter(Boolean);
+  return { holder, waiters: waiters.sort((a, b) => a.since - b.since || (a.id < b.id ? -1 : 1)) };
+}
+
 /**
  * Who is ahead of a waiting landing: the holder plus live landings that started
  * waiting earlier. Advisory only: the slot is not first-come-first-served, and
  * these records only describe it.
  */
-async function slotQueueStatus(target, waitingDir, own) {
-  const holder = await readRecord(`${target}.holder.json`);
-  const names = await readdir(waitingDir).catch(() => []);
-  const waiters = await Promise.all(names.filter((name) => name !== `${own.id}.json`)
-    .map((name) => readRecord(join(waitingDir, name))));
-  const earlier = waiters.filter((record) => record && (record.since < own.since || (record.since === own.since && record.id < own.id)));
-  return { ahead: earlier.length + 1, holder: holder?.label ?? null };
-}
+const queueStatus = ({ holder, waiters }, own) => ({
+  ahead: waiters.filter((record) => record.since < own.since || (record.since === own.since && record.id < own.id)).length + 1,
+  holder: holder?.label ?? null,
+});
 
 /**
  * Run one landing while holding the verification slot for its integration root
@@ -73,8 +90,14 @@ async function slotQueueStatus(target, waitingDir, own) {
  * The lock lives under the user's Pi home and goes stale a minute after its
  * holder dies. Without a `scope` the slot is machine-wide. `onWait` is called
  * when the landing starts waiting and whenever the number of landings ahead of
- * it (or the holder) changes. With `wait: false` it throws
- * `VerificationSlotBusyError` instead of waiting.
+ * it (or the holder) changes.
+ *
+ * `record` adds structured fields to this contender's holder and waiting records.
+ * With `yieldTo`, the contender is in the waiting records from the start, and
+ * `yieldTo({ own, holder, waiters })` decides before each attempt, and again once
+ * the slot is taken, whether to stand aside this round: the lock is not
+ * first-come-first-served, so a contender that must defer to a waiter hands a
+ * slot it took straight back.
  */
 export async function withVerificationSlot(operation, options = {}) {
   const environment = options.env ?? process.env;
@@ -83,41 +106,53 @@ export async function withVerificationSlot(operation, options = {}) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = join(root, slotName(options.scope));
   const waitingDir = `${target}.waiting`;
-  const own = { id: randomUUID(), pid: process.pid, since: Date.now(), label: options.label ?? null };
+  const own = { ...options.record, id: randomUUID(), pid: process.pid, since: Date.now(), label: options.label ?? null };
   const pollMs = options.pollMs ?? 2_000;
+  const stands = async () => Boolean(options.yieldTo) && await options.yieldTo({ own, ...await slotRecords(target, waitingDir, own) });
   let release = null;
   let waiting = false;
   let reported = "";
+  const enqueue = async () => {
+    if (waiting) return;
+    waiting = true;
+    await mkdir(waitingDir, { recursive: true, mode: 0o700 });
+    await writeRecord(join(waitingDir, `${own.id}.json`), own);
+  };
   try {
+    if (options.yieldTo) await enqueue();
     while (!release) {
       options.signal?.throwIfAborted();
-      try {
-        release = await lockfile.lock(target, {
-          realpath: false, stale: 60_000, update: 15_000, retries: 0,
-          // A lost slot only weakens queueing; it must never crash the landing process.
-          onCompromised: () => {},
-        });
-      } catch (error) {
-        if (error?.code !== "ELOCKED") throw error;
-        if (options.wait === false) throw new VerificationSlotBusyError((await readRecord(`${target}.holder.json`))?.label ?? null);
-        if (!waiting) {
-          waiting = true;
-          await mkdir(waitingDir, { recursive: true, mode: 0o700 });
-          await writeFile(join(waitingDir, `${own.id}.json`), JSON.stringify(own), { mode: 0o600 });
+      if (!await stands()) {
+        try {
+          release = await lockfile.lock(target, {
+            realpath: false, stale: STALE_MS, update: 15_000, retries: 0,
+            // A lost slot only weakens queueing; it must never crash the landing process.
+            onCompromised: () => {},
+          });
+        } catch (error) {
+          if (error?.code !== "ELOCKED") throw error;
         }
-        const status = await slotQueueStatus(target, waitingDir, own);
-        if (JSON.stringify(status) !== reported) {
-          reported = JSON.stringify(status);
-          options.onWait?.(status);
+        if (release && await stands().catch(async (error) => { await release().catch(() => {}); throw error; })) {
+          await release().catch(() => {});
+          release = null;
         }
-        await sleep(pollMs, undefined, options.signal ? { signal: options.signal } : undefined);
       }
+      if (release) break;
+      await enqueue();
+      const status = queueStatus(await slotRecords(target, waitingDir, own), own);
+      if (JSON.stringify(status) !== reported) {
+        reported = JSON.stringify(status);
+        options.onWait?.(status);
+      }
+      const now = new Date();
+      await utimes(join(waitingDir, `${own.id}.json`), now, now).catch(() => {});
+      await sleep(pollMs, undefined, options.signal ? { signal: options.signal } : undefined);
     }
   } finally {
     if (waiting) await rm(join(waitingDir, `${own.id}.json`), { force: true }).catch(() => {});
   }
   const holderFile = `${target}.holder.json`;
-  await writeFile(holderFile, JSON.stringify(own), { mode: 0o600 }).catch(() => {});
+  await writeRecord(holderFile, own).catch(() => {});
   try {
     return await heldSlot.run(true, operation);
   } finally {

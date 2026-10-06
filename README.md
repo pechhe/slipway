@@ -145,12 +145,27 @@ candidate.
    <commit>` checks the exact commit out on its own under
    `~/.slipway/state/releases/checkouts`, prepares its dependencies and runs the
    checks inside the repository's release slot, which it holds until it has
-   published. Landing continues while a release verifies. A release confirmed
-   while another holds the slot is refused at once (`Another release (…) is
-   running`): the running one moves the release branch, so the second could only
-   be refused after its own verification. Rerun it, with a fresh plan, once the
-   first finishes. The candidate must already be published on the integration
-   branch.
+   published. Landing continues while a release verifies. The candidate must
+   already be published on the integration branch.
+
+   Concurrent confirms coalesce rather than refuse. Candidates sit on the linear
+   integration branch, so of any two one contains the other, and releasing the
+   newer ships both. A confirm made while another release runs waits for the slot,
+   printing what it waits for (`[release] waiting for release 16bea7013436
+   (contains 5b4569ebb74d)`, or `… to finish before …` when its own candidate is
+   newer). It stands aside for any waiting confirm whose candidate contains its
+   own, so of several waiters only the newest verifies. As soon as the release
+   branch contains its candidate (the release it waited for published), or when
+   it takes the slot and a fresh fetch shows that, it returns `"status":
+   "released_by"` with the release `merge` that shipped it and that merge's
+   candidate as `releasedBy`, without verifying. Otherwise, holding the slot, it
+   plans again against the moved base and verifies and publishes its own
+   candidate, so when the release it waited for fails, an older waiter still
+   runs. Each session only ever verifies the commit it was approved for. A
+   holder or waiter stops counting once its process is gone or, for a waiter,
+   once it has not polled for a minute; a dead holder's lock goes stale after a
+   minute. A confirm whose candidate is already released when it plans returns
+   `"status": "up_to_date"`.
 3. It builds the merge `Release <integration> to <release>` (parents: base, then
    candidate; a `Release-Candidate:` trailer) and refuses unless the merge is
    conflict-free and its tree is the candidate's, so a release branch with changes

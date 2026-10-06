@@ -1,56 +1,13 @@
-import { jj, project, recordCheckout } from "./support/workspace-project.ts";
+import { jj } from "./support/workspace-project.ts";
+import {
+  gatedReleaseCheck, landFile, openReleaseGate, releaseProject, remoteParents, remoteRef, remoteTree, until, verifiedCandidates,
+} from "./support/release-project.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "vite-plus/test";
-import { createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
 import { releaseIntegration } from "../src/lib/release.mjs";
-
-// A project whose `main` is promoted to `release`, which starts at the initial commit on origin.
-async function releaseProject(options: { checks?: (verified: string) => unknown[]; migrations?: boolean; shallow?: boolean } = {}) {
-  const verifiedRelease = { file: "" };
-  const f = await project({
-    shallow: options.shallow,
-    policy: {
-      releaseBranch: "release",
-      // Filled below once the fixture's root is known.
-      requiredReleaseVerification: [],
-      ...(options.migrations ? { migrationFinalization: {
-        mode: "late_bound_serialized", triggerPaths: ["schema"], artifactPaths: ["migrations"],
-        generate: { executable: "node", args: ["-e", ""] }, verify: { executable: "node", args: ["-e", ""] } } } : {}),
-    },
-  });
-  verifiedRelease.file = join(f.root, "release-verified.log");
-  const policyPath = join(f.repo, "slipway.json");
-  const policy = JSON.parse(await readFile(policyPath, "utf8"));
-  policy.requiredReleaseVerification = options.checks?.(verifiedRelease.file)
-    ?? [{ executable: "node", args: ["-e", recordCheckout(verifiedRelease.file)] }];
-  await writeFile(policyPath, JSON.stringify(policy));
-  const git = (args: string[]) => execFileSync("git", args, { cwd: f.repo, stdio: "pipe" });
-  git(["commit", "-qam", "Declare the release policy"]);
-  git(["push", "-q", "origin", "main"]);
-  git(["push", "-q", "origin", "HEAD~1:refs/heads/release"]);
-  jj(f.repo, ["git", "import"]);
-  return { ...f, verifiedRelease: verifiedRelease.file };
-}
-
-type Fixture = Awaited<ReturnType<typeof releaseProject>>;
-
-async function landFile(f: Fixture, file: string, content = `${file}\n`) {
-  const workspace = await createWorkspace(file, f.repo);
-  await writeFile(join(workspace.workspacePath, file), content);
-  const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, sweepOtherWorkspaces: false });
-  assert.equal(result.ok, true, JSON.stringify(result.publication));
-  return result.artifact.commitId as string;
-}
-
-const remoteRef = (f: Fixture, branch: string) =>
-  execFileSync("git", ["--git-dir", f.remote, "rev-parse", `refs/heads/${branch}`], { encoding: "utf8" }).trim();
-const remoteParents = (f: Fixture, commit: string) =>
-  execFileSync("git", ["--git-dir", f.remote, "log", "-1", "--format=%P", commit], { encoding: "utf8" }).trim().split(" ");
-const remoteTree = (f: Fixture, commit: string) =>
-  execFileSync("git", ["--git-dir", f.remote, "rev-parse", `${commit}^{tree}`], { encoding: "utf8" }).trim();
 
 test("a release plans, then verifies the exact candidate and publishes a merge with its tree", async () => {
   // A shallow primary, as YardSmith's is: the base exists only as fetched history.
@@ -105,61 +62,19 @@ test("a failed release check publishes nothing", async () => {
 });
 
 test("a landing does not wait for a release verification", async () => {
-  const started = { file: "" };
-  const go = { file: "" };
-  const f = await releaseProject({ checks: (verified) => {
-    started.file = `${verified}.started`;
-    go.file = `${verified}.go`;
-    const script = `const fs=require("fs");fs.writeFileSync(${JSON.stringify(started.file)},"");`
-      + `const end=Date.now()+20000;while(!fs.existsSync(${JSON.stringify(go.file)})&&Date.now()<end){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)}`;
-    return [{ executable: "node", args: ["-e", script] }];
-  } });
+  const f = await releaseProject({ checks: gatedReleaseCheck });
   try {
     const candidate = await landFile(f, "feature.txt");
     let releaseSettled = false;
     const release = releaseIntegration(f.repo, { confirm: candidate }).finally(() => { releaseSettled = true; });
-    for (let attempt = 0; attempt < 600; attempt += 1) {
-      if (await readFile(started.file).then(() => true, () => false)) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    await until(async () => (await verifiedCandidates(f)).length === 1, "the release check to start");
     // The release's check is now running and blocked; a landing must still go through.
     await landFile(f, "during-release.txt");
     assert.equal(releaseSettled, false, "the landing waited for the release verification");
-    await writeFile(go.file, "");
+    await openReleaseGate(f);
     assert.equal((await release).status, "released");
   } finally {
-    await writeFile(go.file, "").catch(() => {});
-    await f.dispose();
-  }
-});
-
-test("a release started while another verifies is refused at once", async () => {
-  const started = { file: "" };
-  const go = { file: "" };
-  const f = await releaseProject({ checks: (verified) => {
-    started.file = `${verified}.started`;
-    go.file = `${verified}.go`;
-    const script = `const fs=require("fs");fs.writeFileSync(${JSON.stringify(started.file)},"");`
-      + `const end=Date.now()+20000;while(!fs.existsSync(${JSON.stringify(go.file)})&&Date.now()<end){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)}`;
-    return [{ executable: "node", args: ["-e", script] }];
-  } });
-  try {
-    const first = await landFile(f, "feature.txt");
-    let firstSettled = false;
-    const release = releaseIntegration(f.repo, { confirm: first }).finally(() => { firstSettled = true; });
-    for (let attempt = 0; attempt < 600; attempt += 1) {
-      if (await readFile(started.file).then(() => true, () => false)) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    const second = await landFile(f, "later.txt");
-    const refused = await releaseIntegration(f.repo, { confirm: second });
-    assert.equal(firstSettled, false, "the second release waited for the first");
-    assert.equal(refused.status, "refused", JSON.stringify(refused));
-    assert.ok(!refused.ok && /Another release \(release [a-f0-9]{12}\) is running/.test(refused.reason), refused.reason);
-    await writeFile(go.file, "");
-    assert.equal((await release).status, "released");
-  } finally {
-    await writeFile(go.file, "").catch(() => {});
+    await openReleaseGate(f).catch(() => {});
     await f.dispose();
   }
 });
