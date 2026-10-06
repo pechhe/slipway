@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Declared project code:** `slipway.json` may set `projectCode` (2-8 lowercase
+  letters or digits) to name workspaces regardless of the checkout folder, so
+  renaming `YardSmith` to `yardsmith` keeps `ys-412` instead of switching to `ya-412`.
+
 ## v1.7.0
 
 - **Second release refused at once:** `release --confirm` holds the release slot

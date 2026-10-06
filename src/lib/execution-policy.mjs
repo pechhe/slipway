@@ -173,6 +173,8 @@ function parsePolicyText(raw) {
   if (!isObject(parsed) || parsed.version !== 1) fail("must be a version-1 policy");
   if (parsed.integrationBranch != null && (typeof parsed.integrationBranch !== "string" || !SAFE_BRANCH.test(parsed.integrationBranch)))
     fail("declares an unsafe integrationBranch");
+  if (parsed.projectCode != null && (typeof parsed.projectCode !== "string" || !/^[a-z0-9]{2,8}$/.test(parsed.projectCode)))
+    fail("declares a projectCode that is not 2-8 lowercase letters or digits");
   postIntegrationPolicy(parsed.postIntegration);
   generatedPathMatchers(parsed.generatedPaths);
   return {

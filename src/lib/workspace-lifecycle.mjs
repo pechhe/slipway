@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactPublished, finishLandedWorkspace, publicationRemote } from "./landing-steps.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
-import { projectCode, revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
+import { repositoryProjectCode, revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
 import { metadataHome, poolRefillLogPath, stateHome, workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import { landingStatePaths, listWorkspaces, lockPath, metadataPath, readLandingState, renameWorkspace, workspaceMetadata } from "./workspace-state.mjs";
 import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
@@ -42,7 +42,7 @@ export async function provisionSpare(cwd = process.cwd()) {
   return withWorkspaceTransaction(`pool:${context.integration.root}`, async () => {
     const spare = (await listWorkspaces(cwd)).find((workspace) => workspace.metadata?.spare === true);
     if (spare?.metadata?.prepared === true) return { provisioned: false, reason: "spare-exists" };
-    const name = spare?.name ?? `${projectCode(basename(context.integration.root))}-spare-${randomUUID().slice(0, 6)}`;
+    const name = spare?.name ?? `${await repositoryProjectCode(context.integration.root)}-spare-${randomUUID().slice(0, 6)}`;
     const workspacePath = spare?.root ?? join(workspaceHome(), name);
     if (!spare) {
       await mkdir(workspaceHome(), { recursive: true, mode: 0o700 });

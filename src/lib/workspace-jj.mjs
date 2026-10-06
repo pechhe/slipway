@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
+import { readExecutionPolicy, readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
 
 /**
@@ -41,6 +41,15 @@ export function projectCode(folderName) {
     .filter(Boolean);
   if (words.length >= 2) return `${words[0][0]}${words[1][0]}`;
   return (words[0] ?? "").slice(0, 2).padEnd(2, "x");
+}
+
+/**
+ * A repository's project code: its policy's `projectCode` when declared, so renaming
+ * the checkout folder keeps workspace names stable, else derived from the folder name.
+ */
+export async function repositoryProjectCode(root) {
+  const policy = await readExecutionPolicy(root).catch(() => null);
+  return policy?.projectCode ?? projectCode(basename(root));
 }
 
 /** `pp-412` for an Issue, `pp-fix-toast` for a named task, `pp-a6f18e` otherwise. */
@@ -210,7 +219,7 @@ export async function issueTitle(repositoryRoot, issueNumber) {
 export async function projectPrefix(cwd = process.cwd()) {
   const context = await workspaceContext(cwd);
   if (!context) return null;
-  return projectCode(basename(context.integration.root));
+  return repositoryProjectCode(context.integration.root);
 }
 
 export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {

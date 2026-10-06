@@ -61,6 +61,11 @@ or finalized) that has only that file is refused with a message naming
 ignored. The landing guard keeps guarding a repository that has only the old file
 (its declared branch, `main` and `master`), and its denial names `slipway.json`.
 
+Workspaces are named by a project code: `projectCode` in `slipway.json` (2-8
+lowercase letters or digits) when declared, else two letters derived from the
+checkout folder (`peach-pi` → `pp`, `slipway` → `sl`). Declare it when the folder
+name may change, so existing `ys-412`-style names stay stable.
+
 ## Environment contract
 
 | Name | Set for |
