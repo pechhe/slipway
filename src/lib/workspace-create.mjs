@@ -260,16 +260,20 @@ export async function recoverIssueWorkspace(cwd, options, hooks = {}) {
  * Assign an isolated workspace for `task`. From an isolated workspace, that
  * workspace is bound (unless it has landed). With `issueNumber`, the Issue's
  * workspace is resumed, or its surviving checkout recovered, before a new one is
- * made. Serialized per repository.
+ * made. Allocation is serialized per repository; dependency installation runs
+ * after that lock is released, serialized only per checkout, so concurrent starts
+ * of different workspaces install in parallel.
  */
 export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
   const context = await workspaceContext(cwd);
   if (!context) throw new Error("Workspace isolation requires a Jujutsu repository");
-  return withWorkspaceTransaction(`allocate:${context.integration.root}`, () => createWorkspaceUnlocked(task, cwd, options));
+  const allocation = await withWorkspaceTransaction(`allocate:${context.integration.root}`, () => createWorkspaceUnlocked(task, cwd, options));
+  // Concurrent starts that resolve to one checkout (the same Issue, or a bind) prepare it in turn.
+  return withWorkspaceTransaction(`prepare:${allocation.context.current.root}`, () => ready(allocation));
 }
 
 /**
- * Record the task (and Issue), make the checkout ready and report its acquisition.
+ * Record the task (and Issue) on the allocated workspace, under the allocation lock.
  * `prepared` is a claimed spare's still-exact provisioned readiness, used instead
  * of reinstalling. Resumed and bound workspaces always reinstall: commands run in
  * them may have changed `node_modules` without changing the install inputs.
@@ -277,10 +281,15 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
 async function assigned(hooks, context, task, { issueNumber, attach = true, workspacePath = context.current.root, prepared, ...result }) {
   await writeWorkspaceTaskMetadata(context, task);
   if (issueNumber && attach) await attachWorkspaceIssue(context.current.root, issueNumber);
+  return { hooks, context, issueNumber, prepared, workspace: { ...context, context, pooled: false, ...result, workspacePath } };
+}
+
+/** Make an allocated workspace's checkout ready and report its acquisition. */
+async function ready({ hooks, context, issueNumber, prepared, workspace }) {
   if (prepared) console.error(`[deps] ${basename(context.current.root)}: install inputs unchanged since the spare was prepared; reusing its dependencies`);
   const readiness = prepared ?? await prepare(hooks, context.integration.root, context.current.root);
   acquired(hooks, context, issueNumber);
-  return { ...context, context, pooled: false, ...result, workspacePath, readiness };
+  return { ...workspace, readiness };
 }
 
 const START_FETCH_TIMEOUT_MS = 30_000;

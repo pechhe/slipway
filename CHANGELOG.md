@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.0
+
+- **Concurrent starts install in parallel:** `slipway start` (and
+  `createWorkspace`) now holds the repository's allocation lock only while it
+  names, claims or adds the workspace and records its task and Issue. Dependency
+  installation (or a host `prepare` hook) and the `onAcquired` hook run after
+  that lock is released, under a per-checkout lock, so a fleet starting several
+  workspaces at once no longer queues each install behind the previous one,
+  while concurrent starts of the same Issue still prepare its checkout in turn.
+
 ## v1.9.0
 
 - **Concurrent releases coalesce:** a `release --confirm` made while another
