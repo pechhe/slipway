@@ -113,7 +113,7 @@ imports (`start --integration --issue <n> --json`, `remove <path>`):
 | `release [--confirm <commit>] [--migrations-ready]` | Plan a promotion of the integration branch to the declared release branch, or verify and publish the confirmed candidate (see [Release](#release)). |
 | `cleanup [path]` | Remove the current (or given) workspace once it has landed. |
 | `remove <path>` | Remove the workspace at `path` if it has landed or is untouched; otherwise keep it and exit 1. |
-| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). It denies moving or pushing the integration branch outside `land`, and a declared release branch outside `release`. |
+| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). It denies moving or pushing the integration branch outside `land`, and a declared release branch outside `release`. Each command is judged by the repository it targets (`git -C`, `jj -R`, else the working directory). |
 | `cutover [--check]` | Move pre-v1.0.0 state to `~/.slipway` once and retire `peach-workspace` (see [State and cutover](#state-and-cutover)). |
 
 ## Release

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11.1
+
+- **The guard judges a command by the repository it targets:** `git -C <dir>`
+  (each `-C` in turn) and `jj -R <dir>` (anywhere on the line) are checked
+  against the `slipway.json` governing `<dir>`, not the session's working
+  directory. Pushing an ungoverned repository from a session in a governed one
+  is no longer refused, and a push aimed at a governed repository from
+  elsewhere is now caught. The guard keeps judging by the working directory
+  when it cannot be sure: a `cd` is not followed, a path that is not
+  plain text (expansion, glob or redirection) is not trusted, and `--git-dir`,
+  `--work-tree`, a `GIT_*DIR`/`GIT_WORK_TREE` variable or a sourced file
+  override `-C`.
+
 ## v1.11.0
 
 - **A burst of starts fetches once:** `slipway start` skips its integration

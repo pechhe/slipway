@@ -122,3 +122,53 @@ test("the hook decision applies only to Bash in a governed repository", async ()
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("git -C and jj -R are judged by the repository they target", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "slipway-landing-guard-target-"));
+  try {
+    const governed = path.join(root, "governed");
+    const plain = path.join(root, "plain");
+    await mkdir(governed, { recursive: true });
+    await mkdir(plain, { recursive: true });
+    await writeFile(path.join(governed, "slipway.json"), JSON.stringify({ version: 1, integrationBranch: "develop" }));
+    const denied = async (cwd: string, command: string) =>
+      (await landingGuardDecision({ tool_name: "Bash", cwd, tool_input: { command } }))?.hookSpecificOutput.permissionDecision === "deny";
+
+    for (const command of [
+      `git -C ${plain} push`,
+      "git -C ../plain push origin develop",
+      `jj -R ${plain} git push`,
+      "jj --repository=../plain git push",
+      `git -c core.x=y -C ${plain} push`,
+    ]) assert.equal(await denied(governed, command), false, `ungoverned target: ${command}`);
+
+    for (const command of [
+      `git -C ${governed} push`,
+      `git -C ${plain} -C ../governed push`,
+      `jj -R ${governed} git push`,
+      `git -C ${plain} status && git push`,
+      `cd ${plain} && git push`,
+      `git -C ${root}/$X/governed push origin develop`,
+      `git -C ${root}/g?verned push origin develop`,
+      `git -C ${plain} --git-dir=${governed}/.git push origin develop`,
+      `git -C ${plain} --git-dir ${governed}/.git push origin develop`,
+      `GIT_DIR=${governed}/.git git -C ${plain} push origin develop`,
+      `GIT_COMMON_DIR=${governed}/.git git -C ${plain} push origin develop`,
+      `. ./env.sh && git -C ${plain} push origin develop`,
+      `git -C ${governed}>/dev/null push origin develop`,
+      `git -C ${governed}<-> push origin develop`,
+    ]) assert.equal(await denied(governed, command), true, `governed or unknown target: ${command}`);
+
+    for (const command of [`jj git push -R ${governed} -b develop`, `jj -R${governed} git push -b develop`]) {
+      assert.equal(await denied(plain, command), true, `jj -R anywhere: ${command}`);
+    }
+    for (const command of [`jj git push -b develop -R ${plain}`, `jj -R${plain} git push`]) {
+      assert.equal(await denied(governed, command), false, `jj -R anywhere: ${command}`);
+    }
+
+    assert.equal(await denied(plain, `git -C ${governed} push origin develop`), true, "a governed target is guarded from an ungoverned cwd");
+    assert.equal(await denied(plain, `git -C ${governed} push origin feature`), false, "feature branches stay pushable");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

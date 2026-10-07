@@ -5,7 +5,8 @@
  * Pushing feature bookmarks for a pull request stays allowed.
  */
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { EXECUTION_POLICY_PROBE_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
 const LAND = "Use `slipway land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
@@ -84,6 +85,12 @@ export function simpleCommands(line) {
   }).filter((command) => command.length);
 }
 
+/** Global options that take a value, per program. */
+const VALUED = {
+  git: ["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
+  jj: ["-R", "--repository", "--config", "--config-file", "--at-op", "--at-operation", "--color"],
+};
+
 /** The subcommand and its arguments, past global options (and the values those options take). */
 function subcommand(args, valued) {
   let i = 0;
@@ -95,7 +102,7 @@ const branchOf = (ref) => ref.replace(/^\+/, "").split(":").pop().replace(/^refs
 
 /** A violation is `[reason, branch]`; the branch is null when the command is not specific to one. */
 function gitViolation(args, branches) {
-  const [verb, ...rest] = subcommand(args, ["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+  const [verb, ...rest] = subcommand(args, VALUED.git);
   if (verb === "push") {
     if (rest.some((arg) => ["--all", "--mirror", "--delete", "-d"].includes(arg))) return ["pushes every branch or deletes one", null];
     const refspecs = rest.filter((arg) => !arg.startsWith("-")).slice(1);
@@ -118,7 +125,7 @@ const BOOKMARK_ACTIONS = { s: "set", set: "set", m: "move", move: "move", c: "cr
   d: "delete", delete: "delete", f: "forget", forget: "forget", r: "rename", rename: "rename" };
 
 function jjViolation(args, branches) {
-  const [verb, action, ...rest] = subcommand(args, ["-R", "--repository", "--config", "--config-file", "--at-op", "--at-operation", "--color"]);
+  const [verb, action, ...rest] = subcommand(args, VALUED.jj);
   if (verb === "git" && action === "push") {
     if (rest.some((arg) => ["--all", "--tracked", "--deleted"].includes(arg))) return ["pushes every tracked bookmark", null];
     const named = [];
@@ -139,27 +146,86 @@ function jjViolation(args, branches) {
   return null;
 }
 
+/** Why one parsed command bypasses landing (or, for `releaseBranch`, release), or null. */
+function commandBypass([program, ...args], branches, releaseBranch) {
+  const name = program.split("/").pop();
+  const violation = name === "git" ? gitViolation(args, branches)
+    : name === "jj" ? jjViolation(args, branches)
+    : name === "gh" && args[0] === "pr" && args[1] === "merge" ? ["merges a pull request into the integration branch", null]
+    : null;
+  return violation ? `This command ${violation[0]}. ${releaseBranch && violation[1] === releaseBranch ? RELEASE : LAND}` : null;
+}
+
 /**
  * Why this shell line bypasses landing (or, for `releaseBranch`, release) in a
  * repository guarding these branches, or null.
  */
 export function landingBypass(line, branches, releaseBranch = null) {
-  for (const [program, ...args] of simpleCommands(line)) {
-    const name = program.split("/").pop();
-    const violation = name === "git" ? gitViolation(args, branches)
-      : name === "jj" ? jjViolation(args, branches)
-      : name === "gh" && args[0] === "pr" && args[1] === "merge" ? ["merges a pull request into the integration branch", null]
-      : null;
-    if (violation) return `This command ${violation[0]}. ${releaseBranch && violation[1] === releaseBranch ? RELEASE : LAND}`;
+  for (const command of simpleCommands(line)) {
+    const bypass = commandBypass(command, branches, releaseBranch);
+    if (bypass) return bypass;
   }
   return null;
 }
 
-/** Claude Code hook input → a deny decision, or null to let the call proceed. */
+/** The option naming the repository a command runs against, per program. */
+const TARGET = { git: ["-C"], jj: ["-R", "--repository"] };
+
+/**
+ * A path word the guard can resolve as written: plain path characters only
+ * (no expansion, glob or redirection in bash or zsh), with `~` only as a leading `~` or `~/`.
+ */
+const literalPath = (word) => /^[\w./~+@%,: -]+$/.test(word) && !word.slice(1).includes("~") && (!word.startsWith("~") || word === "~" || word.startsWith("~/"));
+
+/** Whether a line sources a file, which could set git's repository variables unseen. */
+const sourcesFile = (line) => simpleCommands(line).some(([program]) => program === "." || program === "source");
+
+/**
+ * The directory a command runs against, or `cwd` when the guard cannot be sure:
+ * git applies every `-C` before the subcommand in turn; jj takes its last `-R`
+ * anywhere on the line (`-R <dir>`, `-R<dir>`, `--repository[=]<dir>`). A value
+ * needing shell expansion, a git command that also names `--git-dir`,
+ * `--work-tree` or a `GIT_*DIR`/`GIT_WORK_TREE` variable, and a line that sources
+ * a file (which could set those) keep `cwd`: the old, closed answer.
+ */
+function targetDirectory(name, args, cwd, line) {
+  const flags = TARGET[name];
+  if (!flags) return cwd;
+  if (name === "git" && (/\bGIT_(?:[A-Z_]*DIR|WORK_TREE)=/.test(line) || sourcesFile(line) || args.some((arg) => /^--(?:git-dir|work-tree)(?:=|$)/.test(arg)))) return cwd;
+  const values = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (name === "git" && !arg.startsWith("-")) break;
+    if (flags.includes(arg)) values.push(args[(i += 1)]);
+    else if (arg.startsWith("--repository=") && name === "jj") values.push(arg.slice("--repository=".length));
+    else if (name === "jj" && arg.startsWith("-R") && arg.length > 2) values.push(arg.slice(2));
+    else if (!arg.includes("=") && VALUED[name].includes(arg)) i += 1;
+  }
+  if (!values.length) return cwd;
+  if (values.some((value) => value === undefined || !literalPath(value))) return cwd;
+  return name === "git"
+    ? values.reduce((dir, value) => resolve(dir, expandHome(value)), cwd)
+    : resolve(cwd, expandHome(values.at(-1)));
+}
+
+const expandHome = (target) => (target === "~" ? homedir() : target.startsWith("~/") ? join(homedir(), target.slice(2)) : target);
+
+/**
+ * Claude Code hook input → a deny decision, or null to let the call proceed.
+ * Each command is judged by the repository it targets: `git -C <dir>` and
+ * `jj -R <dir>` name it explicitly; otherwise it is the tool call's cwd. A `cd`
+ * is not followed (subshells and failed `cd`s would make that unsound), so a
+ * `cd` into another repository is still judged by the cwd: fail closed.
+ */
 export async function landingGuardDecision(input) {
   if (input?.tool_name !== "Bash" || typeof input.tool_input?.command !== "string") return null;
-  const governed = await governance(input.cwd ?? process.cwd());
-  const bypass = governed && landingBypass(input.tool_input.command, governed.branches, governed.release);
-  const reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
-  return reason ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } } : null;
+  const cwd = input.cwd ?? process.cwd();
+  for (const command of simpleCommands(input.tool_input.command)) {
+    const [program, ...args] = command;
+    const governed = await governance(targetDirectory(program.split("/").pop(), args, cwd, input.tool_input.command));
+    const bypass = governed && commandBypass(command, governed.branches, governed.release);
+    const reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
+    if (reason) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
+  }
+  return null;
 }
