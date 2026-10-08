@@ -64,8 +64,10 @@ async function coveredByCompletedDescendant(input, gitDirectory, commit, policy,
     if (receipt?.status !== "complete" || receipt.approved !== true || receipt.attempt < 1
       || receipt.target !== policy.target || !/^[a-f0-9]{40}$/.test(descendant ?? "")
       || descendant === commit || !await isAncestor(gitDirectory, descendant, tip, environmentFactory, abortSignal)) continue;
-    const candidate = await readPostIntegrationPolicy(gitDirectory, descendant, environmentFactory);
-    if (!candidate.policy || postIntegrationPolicyDigest(candidate.policy) !== policyDigest
+    // A receipt whose commit still carries the retired policy path cannot cover.
+    const candidate = await readPostIntegrationPolicy(gitDirectory, descendant, environmentFactory)
+      .catch((error) => { if (error?.code === "SLIPWAY_RETIRED_POLICY_PATH") return null; throw error; });
+    if (!candidate?.policy || postIntegrationPolicyDigest(candidate.policy) !== policyDigest
       || !(receipt.policyDigest === policyDigest
         && receipt.idempotencyKey === artifactKey(gitDirectory, descendant, policyDigest, policy.target)
         || completedLegacyReceipt(receipt, gitDirectory, descendant, candidate.policy))) continue;
