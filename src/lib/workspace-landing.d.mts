@@ -26,6 +26,8 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   postLand?: { status: string; commit?: string; log?: string; reason?: string };
   /** An earlier landing's background verification on this repository did not pass. */
   postLandWarning?: string;
+  /** What this landing's sweep of other disposable workspaces removed and kept. */
+  sweep?: import("./workspace-sweep.mjs").SweepResult;
 }>;
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
 export function prepareWorkspaceContinuation(task: string, cwd: string): ReturnType<typeof createWorkspace>;

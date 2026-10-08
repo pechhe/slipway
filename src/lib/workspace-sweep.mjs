@@ -3,7 +3,7 @@ import { platform } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { run, workspaceContext } from "./workspace-jj.mjs";
 import { inspectWorkspaces, lockPath } from "./workspace-state.mjs";
-import { cleanupLandedWorkspace, removeWorkspace, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs";
+import { cleanupLandedWorkspace, describeRetention, removeWorkspace, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs";
 
 /**
  * Disposable-workspace housekeeping shared by every surface that lands or
@@ -11,7 +11,8 @@ import { cleanupLandedWorkspace, removeWorkspace, retainedWorkspaceMaterial } fr
  * checks; a source-empty checkout is removed once `EMPTY_IDLE_MS` has passed
  * since it was assigned. Neither is touched while a live process works in it, and
  * unique untracked material always keeps a workspace. Unfinished work is never
- * swept: only `hasWork === false` checkouts qualify.
+ * swept: only `hasWork === false` checkouts qualify. An Issue's checkout is
+ * swept once it has landed, never while it is only assigned.
  */
 export const EMPTY_IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -77,13 +78,13 @@ export async function sweepDisposableWorkspaces(cwd = process.cwd(), options = {
   if (!context) return { removed, skipped };
   const candidates = (await inspectWorkspaces(cwd)).filter((workspace) =>
     workspace.name !== "default" && workspace.root && !workspace.hasWork
-    && !workspace.metadata?.spare && !workspace.metadata?.issueNumber);
+    && !workspace.metadata?.spare && (workspace.landed || !workspace.metadata?.issueNumber));
   if (!candidates.length) return { removed, skipped };
   const cwds = await processWorkingDirectories();
-  if (!cwds) return { removed, skipped: candidates.map(({ name }) => ({ name, reason: "process working directories unavailable" })) };
+  if (!cwds) return { removed, skipped: candidates.map(({ name, landed }) => ({ name, landed, reason: "process working directories unavailable" })) };
   const guarded = [...protectedRoots, process.cwd()];
   for (const workspace of candidates) {
-    const skip = (reason) => skipped.push({ name: workspace.name, reason });
+    const skip = (reason) => skipped.push({ name: workspace.name, landed: workspace.landed, reason });
     if (guarded.some((root) => within(root, workspace.root))) continue;
     if (cwds.some((path) => within(path, workspace.root)) || await lockOwnerAlive(workspace.name)) {
       skip("in use by a live process");
@@ -93,7 +94,7 @@ export async function sweepDisposableWorkspaces(cwd = process.cwd(), options = {
       if (workspace.landed) {
         const result = await cleanupLandedWorkspace(workspace.root);
         if (result.cleaned) removed.push(workspace.name);
-        else skip(result.reason ?? "retained");
+        else skip(describeRetention(result));
         continue;
       }
       if (emptyIdleMs > 0 && now - await assignedAt(workspace) < emptyIdleMs) continue;

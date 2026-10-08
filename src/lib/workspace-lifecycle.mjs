@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, statSync } from "node:fs";
-import { mkdir, readdir, realpath, rm } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdir, readdir, readlink, realpath, rm } from "node:fs/promises";
+import { basename, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactPublished, finishLandedWorkspace, publicationRemote } from "./landing-steps.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
@@ -153,7 +153,7 @@ const REPRODUCIBLE = new Set([
  * Every cleanup surface (Pi launcher, CLI, Peach host) must pass this first.
  */
 export async function retainedWorkspaceMaterial(root, integrationRoot, limit = 5) {
-  return uniqueUntrackedMaterial(root, limit, await declaredGeneratedPaths(integrationRoot));
+  return uniqueUntrackedMaterial(root, limit, await declaredGeneratedPaths(integrationRoot), integrationRoot);
 }
 
 /** One human explanation of why cleanup kept a landed workspace. */
@@ -171,10 +171,16 @@ async function declaredGeneratedPaths(integrationRoot) {
 /**
  * Files in a checkout that are neither tracked nor reproducible (a built-in tool
  * cache or a path the repository declares as generated): ignored or unexplained
- * material that cleanup must not destroy. Symlinks are reported, never followed.
- * Returns at most `limit` repository-relative paths.
+ * material that cleanup must not destroy. Symlinks are reported, never followed,
+ * except one pointing into `primaryRoot` (the primary checkout), whose target
+ * outlives the checkout. Returns at most `limit` repository-relative paths.
  */
-export async function uniqueUntrackedMaterial(root, limit = 5, generated = []) {
+export async function uniqueUntrackedMaterial(root, limit = 5, generated = [], primaryRoot = null) {
+  const primary = primaryRoot && resolve(primaryRoot);
+  const linksIntoPrimary = async (directory, name) => {
+    const target = resolve(directory, await readlink(join(directory, name)));
+    return target === primary || target.startsWith(primary + sep);
+  };
   const tracked = new Set((await jj(root, ["file", "list"])).split("\n").filter(Boolean));
   const found = [];
   async function walk(directory, relative) {
@@ -184,7 +190,9 @@ export async function uniqueUntrackedMaterial(root, limit = 5, generated = []) {
       const path = relative ? `${relative}/${entry.name}` : entry.name;
       if (generated.some((matcher) => matcher.test(`${path}/`))) continue;
       if (entry.isDirectory()) await walk(join(directory, entry.name), path);
-      else if (!tracked.has(path)) found.push(path);
+      else if (tracked.has(path)) continue;
+      else if (primary && entry.isSymbolicLink() && await linksIntoPrimary(directory, entry.name)) continue;
+      else found.push(path);
     }
   }
   await walk(root, "");

@@ -89,8 +89,9 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // Release other disposable checkouts after every CLI/extension landing. A host
   // that owns its checkout records (Peach desktop) opts out and releases them
   // itself. The sweep never fails the landing.
-  if (result.ok && options.sweepOtherWorkspaces !== false) await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined);
-  return postLandFailure ? { ...started, postLandWarning: postLandFailure } : started;
+  const sweep = result.ok && options.sweepOtherWorkspaces !== false
+    ? await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined) : undefined;
+  return { ...started, ...(sweep ? { sweep } : {}), ...(postLandFailure ? { postLandWarning: postLandFailure } : {}) };
 }
 
 async function landInSlot(cwd, context, remote, options) {

@@ -2,7 +2,7 @@ import { jj, project } from "./support/workspace-project.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vite-plus/test";
@@ -24,6 +24,7 @@ async function land(cwd: string, file: string) {
   await writeFile(join(cwd, file), `${file}\n`);
   const result = await landWorkspace(cwd, { onProgress: () => {} });
   assert.equal(result.ok, true, JSON.stringify(result.publication));
+  return result;
 }
 
 test("an idle empty workspace is swept, but not while recent, occupied or claimed", async () => {
@@ -51,7 +52,7 @@ test("an idle empty workspace is swept, but not while recent, occupied or claime
     assert.match(reasons[locked.current.name] ?? "", /live process/);
     for (const kept of [occupied, locked, issue]) assert.ok(existsSync(kept.workspacePath), kept.current.name);
     const remaining = names(f.repo);
-    assert.ok(remaining.includes(issue.current.name), "Issue workspaces are never swept");
+    assert.ok(remaining.includes(issue.current.name), "an Issue workspace that has not landed is never swept");
     assert.ok(remaining.some((name) => /-spare-/.test(name)), "spares are never swept");
     assert.ok(!remaining.includes(idle.current.name));
   } finally {
@@ -71,6 +72,23 @@ test("a workspace with unique untracked files is kept by sweep and prune", async
     assert.match(swept.skipped[0]?.reason ?? "", /notes\/draft\.md/);
     assert.deepEqual((await pruneEmptyWorkspaces(f.repo)).removed, []);
     assert.ok(existsSync(join(kept.workspacePath, "notes", "draft.md")));
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+test("a link into the primary checkout does not keep a workspace, but a link elsewhere does", async () => {
+  const f = await project({ ignore: ".env\n" });
+  try {
+    await writeFile(join(f.repo, ".env"), "SECRET=1\n");
+    const linked = await createWorkspace("linked", f.repo);
+    await symlink(join(f.repo, ".env"), join(linked.workspacePath, ".env"));
+    const elsewhere = await createWorkspace("elsewhere", f.repo);
+    await symlink(join(f.repo, "..", "outside.env"), join(elsewhere.workspacePath, ".env"));
+    const swept = await sweepDisposableWorkspaces(f.repo, { now: later() });
+    assert.deepEqual(swept.removed, [linked.current.name]);
+    assert.match(swept.skipped.find(({ name }) => name === elsewhere.current.name)?.reason ?? "", /\.env/);
+    assert.equal(await readFile(join(f.repo, ".env"), "utf8"), "SECRET=1\n", "the link's target is untouched");
   } finally {
     await f.dispose();
   }
@@ -99,12 +117,18 @@ test("landing anywhere releases other delivered checkouts, but not one still in 
   try {
     const first = await createWorkspace("first", f.repo);
     await land(first.workspacePath, "first.txt");
-    const busy = await createWorkspace("busy", f.repo);
-    await land(busy.workspacePath, "busy.txt");
+    const issue = await createWorkspace("issue", f.repo);
+    await attachWorkspaceIssue(issue.workspacePath, 41);
+    await land(issue.workspacePath, "issue.txt");
     assert.equal(existsSync(first.workspacePath), false, "the next landing released the first delivered checkout");
+    const busy = await createWorkspace("busy", f.repo);
+    const landed = await land(busy.workspacePath, "busy.txt");
+    assert.deepEqual(landed.sweep?.removed, [issue.current.name], "a delivered Issue checkout is released and reported");
+    assert.equal(existsSync(issue.workspacePath), false);
     release = occupy(busy.workspacePath);
     const last = await createWorkspace("last", f.repo);
-    await land(last.workspacePath, "last.txt");
+    const kept = (await land(last.workspacePath, "last.txt")).sweep?.skipped ?? [];
+    assert.deepEqual(kept.map(({ name, landed }) => [name, landed]), [[busy.current.name, true]], "the landing reports the delivered checkout it kept");
     assert.ok(existsSync(busy.workspacePath), "a delivered checkout with a live process is kept");
     assert.ok(existsSync(last.workspacePath), "the landing never removes its own checkout");
     assert.equal(f.remoteFile("last.txt"), "last.txt\n");

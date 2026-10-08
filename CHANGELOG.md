@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.12.0
+
+- **Landed Issue workspaces are released:** the sweep after each landing now
+  removes a delivered checkout attached to an Issue, with the same checks as
+  `cleanup` (integrated, published, no new work, no live process). An Issue
+  workspace that has not landed is still never swept. Previously every Issue
+  workspace stayed until someone ran `cleanup` in it.
+- **A link into the primary checkout no longer keeps a workspace:** a symlink
+  whose target is inside the integration checkout (such as a linked `.env`)
+  is not unique material, because deleting the link leaves its target intact.
+- **Landing says what its sweep did:** `land` prints each workspace it removed
+  and each landed workspace it kept, with the reason, and returns the result as
+  `sweep`. Previously skip reasons were discarded.
+
 ## v1.11.1
 
 - **The guard judges a command by the repository it targets:** `git -C <dir>`

@@ -252,10 +252,14 @@ try {
     // stderr, so stdout stays the JSON result.
     const finished = { ...timing, finishedAt: Date.now() };
     console.error(landingTimingLine(finished, result));
+    for (const name of result.sweep?.removed ?? []) console.error(`Removed workspace: ${name}`);
+    // An undelivered checkout kept by its session is the normal case; a delivered one is a leftover.
+    for (const skipped of result.sweep?.skipped ?? []) if (skipped.landed) console.error(`Kept landed workspace ${skipped.name}: ${skipped.reason}`);
     await appendMetric("landings", { workspace: basename(process.cwd()), ...landingTimingRecord(finished, result) });
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
       ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
-      ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}) }, null, 2));
+      ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}),
+      ...(result.sweep ? { sweep: result.sweep } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else if (command === "release") {
     process.exitCode = await runRelease(rest);

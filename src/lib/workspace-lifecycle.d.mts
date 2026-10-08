@@ -14,7 +14,7 @@ export function startSpareRefill(
   cwd?: string,
   options?: { command?: string[] },
 ): Promise<{ started: boolean; pid?: number; logPath?: string; reason?: string }>;
-export function uniqueUntrackedMaterial(root: string, limit?: number, generated?: RegExp[]): Promise<string[]>;
+export function uniqueUntrackedMaterial(root: string, limit?: number, generated?: RegExp[], primaryRoot?: string | null): Promise<string[]>;
 export function retainedWorkspaceMaterial(root: string, integrationRoot: string, limit?: number): Promise<string[]>;
 export function describeRetention(result: { reason?: string; paths?: string[] } | null | undefined): string;
 /** Host seams for retiring a checkout: its guarded forget, lifecycle event and command environment. */
