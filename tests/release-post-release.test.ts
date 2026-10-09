@@ -1,0 +1,120 @@
+import { jj } from "./support/workspace-project.ts";
+import { landFile, releaseProject, remoteRef, until } from "./support/release-project.ts";
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test } from "vite-plus/test";
+import { targetKeyOf } from "../src/lib/post-integration-coverage.mjs";
+import { withTargetLease } from "../src/lib/post-integration-finalization.mjs";
+import { readExactExecutionPolicy } from "../src/lib/post-integration-source.mjs";
+import { releaseIntegration } from "../src/lib/release.mjs";
+import { postIntegrationHome } from "../src/lib/workspace-paths.mjs";
+
+const TARGET = "fixture-db:development";
+
+/**
+ * A post-release step that records the release it ran for and what the remote
+ * release branch held at that moment. It holds while `<root>/hold` exists, after
+ * writing `<root>/started`, and fails while `<root>/fail` exists.
+ */
+const recordingStep = (root: string, remote: string) => {
+  const at = (name: string) => JSON.stringify(join(root, name));
+  return {
+    version: 1,
+    target: TARGET,
+    timeoutMs: 60_000,
+    targetProbe: { executable: "node", args: ["-e", `console.log(JSON.stringify({ target: ${JSON.stringify(TARGET)} }))`] },
+    command: { executable: "node", args: ["-e", [
+      `const fs = require("fs"); const { execFileSync } = require("child_process");`,
+      `fs.writeFileSync(${at("started")}, "");`,
+      `while (fs.existsSync(${at("hold")})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);`,
+      `const published = execFileSync("git", ["--git-dir", ${JSON.stringify(remote)}, "rev-parse", "refs/heads/release"], { encoding: "utf8" }).trim();`,
+      `const source = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();`,
+      `fs.appendFileSync(${at("post-release.log")}, JSON.stringify({ merge: process.env.SLIPWAY_RELEASE_MERGE, published, source }) + "\\n");`,
+      `if (fs.existsSync(${at("fail")})) { console.error("reset failed"); process.exit(3); }`,
+    ].join("\n")] },
+  };
+};
+
+const runs = async (root: string) => (await readFile(join(root, "post-release.log"), "utf8").catch(() => ""))
+  .split("\n").filter(Boolean).map((line) => JSON.parse(line) as { merge: string; published: string; source: string });
+
+test("a release runs its post-release step once it has published", async () => {
+  const f = await releaseProject({ postRelease: recordingStep });
+  try {
+    const candidate = await landFile(f, "feature.txt");
+    const released = await releaseIntegration(f.repo, { confirm: candidate });
+    assert.ok(released.ok && released.status === "released", JSON.stringify(released));
+    assert.equal(released.postRelease?.ok, true, JSON.stringify(released.postRelease));
+    assert.deepEqual(await runs(f.root), [{ merge: released.merge, published: released.merge, source: candidate }],
+      "the step ran after the release merge was on the remote");
+    // A completed step is not rerun by a later confirm of the same candidate.
+    const again = await releaseIntegration(f.repo, { confirm: candidate });
+    assert.equal(again.status, "up_to_date");
+    assert.equal((await runs(f.root)).length, 1);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a failed post-release step keeps the release, is reported and is retried by the next confirm", async () => {
+  const f = await releaseProject({ postRelease: recordingStep });
+  try {
+    await writeFile(join(f.root, "fail"), "");
+    const candidate = await landFile(f, "feature.txt");
+    const released = await releaseIntegration(f.repo, { confirm: candidate });
+    assert.ok(released.ok && released.status === "released", JSON.stringify(released));
+    assert.equal(remoteRef(f, "release"), released.merge, "the failure does not undo the release");
+    assert.equal(released.postRelease?.ok, false);
+    assert.match(released.postRelease?.reason ?? "", /failed or timed out; its output is in /);
+    assert.doesNotMatch(released.postRelease?.reason ?? "", /reset failed/, "the step's output stays out of the result");
+    assert.equal(released.postRelease?.retry, `slipway release --confirm ${candidate.slice(0, 12)}`);
+
+    const plan = await releaseIntegration(f.repo);
+    assert.ok(plan.ok && plan.status === "up_to_date");
+    assert.equal(plan.pendingPostRelease?.status, "failed", "a plan reports the failed step");
+
+    await rm(join(f.root, "fail"));
+    // The retry runs in the integration branch as it is now, not the released candidate.
+    const later = await landFile(f, "later.txt");
+    const retried = await releaseIntegration(f.repo, { confirm: candidate });
+    assert.ok(retried.ok && retried.status === "up_to_date", JSON.stringify(retried));
+    assert.equal(retried.postRelease?.ok, true, JSON.stringify(retried.postRelease));
+    assert.equal(retried.postRelease?.attempt, 2);
+    assert.equal(retried.postRelease?.merge, released.merge, "the retry names the merge that shipped the candidate");
+    assert.equal(retried.postRelease?.source, later);
+    assert.equal((await runs(f.root)).at(-1)?.source, later);
+    assert.equal(remoteRef(f, "release"), released.merge);
+    const settled = await releaseIntegration(f.repo);
+    assert.ok(settled.ok && settled.status === "up_to_date");
+    assert.equal(settled.pendingPostRelease, undefined, "a completed retry clears the report");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a post-release step holds the target lease landing's post-integration step takes", async () => {
+  const f = await releaseProject({ postRelease: recordingStep });
+  try {
+    await writeFile(join(f.root, "hold"), "");
+    const candidate = await landFile(f, "feature.txt");
+    const release = releaseIntegration(f.repo, { confirm: candidate });
+    await until(() => existsSync(join(f.root, "started")), "the post-release step to start");
+    const { gitDirectory } = await readExactExecutionPolicy(jj(f.repo, ["git", "root"]), candidate);
+    let stepDoneWhenLeased: number | null = null;
+    const landing = withTargetLease(postIntegrationHome(), targetKeyOf(gitDirectory, TARGET), async () => {
+      stepDoneWhenLeased = (await runs(f.root)).length;
+    });
+    // Nothing can signal a lease that is correctly not taken, so give it a moment to be wrongly taken.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(stepDoneWhenLeased, null, "the lease was taken while the step ran");
+    await rm(join(f.root, "hold"));
+    await landing;
+    assert.equal(stepDoneWhenLeased, 1, "the lease waited for the step to finish");
+    assert.equal((await release).status, "released");
+  } finally {
+    await rm(join(f.root, "hold"), { force: true });
+    await f.dispose();
+  }
+});

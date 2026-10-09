@@ -6,7 +6,9 @@
  * artifacts and any half-built Specs (warned about, never refused). With `confirm`, the candidate commit id a human approved, it checks
  * that exact commit out on its own, runs `requiredReleaseVerification`, builds the
  * release merge, refuses unless its tree is the verified tree, and publishes it.
- * Concurrent confirms coalesce: see `holdReleaseSlot`.
+ * Concurrent confirms coalesce: see `holdReleaseSlot`. Once it has published, it
+ * runs the candidate's declared `postRelease` step (see `post-release.mjs`), whose
+ * failure is reported in the result without undoing the release.
  *
  * jj commands ignore working copies, except creating the verification checkout,
  * which snapshots only the checkout the release runs from.
@@ -15,6 +17,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readExecutionPolicyAtCommit } from "./execution-policy.mjs";
 import { githubRepository } from "./post-land-issue.mjs";
+import { pendingPostRelease, postReleaseRetry, runPostRelease } from "./post-release.mjs";
 import { halfBuiltSpecs } from "./release-specs.mjs";
 import { runRequiredVerification } from "./required-verification.mjs";
 import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
@@ -263,6 +266,33 @@ export async function releaseIntegration(cwd = process.cwd(), options = {}) {
   return result;
 }
 
+/**
+ * Run the declared post-release step for a published release. Whatever goes wrong,
+ * the release stands: a failure, even one to take the target lease, becomes a
+ * reported `postRelease` outcome with its retry command.
+ */
+async function runPostReleaseStep(plan, mergeOf, onProgress, { onlyIfPending }) {
+  let merge = null;
+  try {
+    merge = await mergeOf();
+    const outcome = await runPostRelease({ root: plan.root, integrationBranch: plan.integrationBranch, candidate: plan.candidate,
+      merge, onlyIfPending, onProgress });
+    if (outcome && !outcome.ok) onProgress(`[release] post-release step failed: ${outcome.reason}. Retry with \`${outcome.retry}\`.`);
+    return outcome ? { postRelease: outcome } : {};
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const retry = postReleaseRetry(plan.candidate);
+    onProgress(`[release] post-release step failed: ${reason}. Retry with \`${retry}\`.`);
+    return { postRelease: { ok: false, status: "failed", candidate: plan.candidate, merge, reason, retry } };
+  }
+}
+
+/** A plan reports a post-release step that did not complete, so no release silently skips it. */
+async function pendingPostReleaseField(plan) {
+  const pending = await pendingPostRelease(plan.root, plan.candidate);
+  return pending ? { pendingPostRelease: pending } : {};
+}
+
 /** The result fields describing `plan`; the Spec check runs again on every call, as a Spec's Tickets may have closed in between. */
 async function describePlan(plan, graphql) {
   const summary = { integrationBranch: plan.integrationBranch, releaseBranch: plan.releaseBranch, remote: plan.remote,
@@ -278,10 +308,15 @@ async function describePlan(plan, graphql) {
 async function releaseIntegrationUnmeasured(cwd, { confirm, migrationsReady = false, onProgress = () => {}, graphql } = {}, onVerified = () => {}) {
   try {
     const plan = await planRelease(cwd, confirm === undefined ? {} : { candidate: confirm });
-    if (!plan.commits.length) return { ok: true, status: "up_to_date", ...await describePlan(plan, graphql) };
+    if (!plan.commits.length) {
+      // A confirm of a released candidate retries a post-release step that did not complete.
+      const retried = confirm === undefined ? await pendingPostReleaseField(plan)
+        : await runPostReleaseStep(plan, async () => (await shippedBy(plan)).merge, onProgress, { onlyIfPending: true });
+      return { ok: true, status: "up_to_date", ...await describePlan(plan, graphql), ...retried };
+    }
     const summary = await describePlan(plan, graphql);
     if (confirm === undefined) {
-      return { ok: true, status: "planned", ...summary, subjects: plan.commits.map((commit) => commit.subject),
+      return { ok: true, status: "planned", ...summary, ...await pendingPostReleaseField(plan), subjects: plan.commits.map((commit) => commit.subject),
         next: `After explicit human approval: slipway release --confirm ${plan.candidate.slice(0, 12)}`
           + (plan.migrationArtifacts.length ? " --migrations-ready (once these migrations are applied where the release deploys)" : "") };
     }
@@ -319,12 +354,13 @@ async function releaseIntegrationUnmeasured(cwd, { confirm, migrationsReady = fa
     if ("releasedBy" in outcome) {
       onProgress(`[release] ${plan.candidate.slice(0, 12)} is already on ${plan.releaseBranch}`
         + (outcome.releasedBy ? `, released by ${outcome.releasedBy.slice(0, 12)}` : ""));
-      return { ok: true, status: "released_by", ...outcome.summary, merge: outcome.merge, releasedBy: outcome.releasedBy };
+      return { ok: true, status: "released_by", ...outcome.summary, merge: outcome.merge, releasedBy: outcome.releasedBy,
+        ...await runPostReleaseStep(plan, async () => outcome.merge, onProgress, { onlyIfPending: true }) };
     }
     const record = { ...outcome.summary, merge: outcome.merge, verification: outcome.verification, releasedAt: new Date().toISOString() };
     await mkdir(releaseHome(), { recursive: true });
     await writeFile(join(releaseHome(), `${record.releasedAt.replace(/[:.]/g, "-")}-${plan.candidate.slice(0, 12)}.json`), `${JSON.stringify(record, null, 2)}\n`);
-    return { ok: true, status: "released", ...record };
+    return { ok: true, status: "released", ...record, ...await runPostReleaseStep(plan, async () => outcome.merge, onProgress, { onlyIfPending: false }) };
   } catch (error) {
     if (error instanceof ReleaseRefusal) return { ok: false, status: "refused", reason: error.message };
     if (error?.name === "RequiredVerificationError") return { ok: false, status: "verification_failed", reason: error.message, evidence: error.evidence };

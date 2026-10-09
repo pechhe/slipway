@@ -9,6 +9,14 @@ export type PostIntegrationPolicy = {
   environmentKeys: string[];
   approvalMode: "explicit-human" | "automatic-development";
 };
+export type PostReleasePolicy = {
+  version: 1;
+  target: string;
+  command: FinalizationCommand;
+  targetProbe: FinalizationCommand;
+  timeoutMs: number;
+  environmentKeys: string[];
+};
 export type PostIntegrationApproval = {
   humanApproved: true;
   integratedCommitSha: string;
@@ -17,5 +25,6 @@ export type PostIntegrationApproval = {
 };
 
 export function postIntegrationPolicy(value: unknown): PostIntegrationPolicy | null;
+export function postReleasePolicy(value: unknown): PostReleasePolicy | null;
 export function postIntegrationPolicyDigest(policy: PostIntegrationPolicy): string;
 export function exactPostIntegrationApproval(value: unknown, commit: string, digest: string, target: string): boolean;

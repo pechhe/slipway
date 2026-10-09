@@ -31,6 +31,7 @@ export type ExecutionPolicy = {
   /** How many prepared spare workspaces the pool keeps; 1 when undeclared. */
   spares?: number;
   postIntegration?: unknown;
+  postRelease?: unknown;
 };
 export type IntegrationBranchProbes = {
   originHead?: () => Promise<string | null>;

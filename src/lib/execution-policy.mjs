@@ -7,7 +7,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { postIntegrationPolicy } from "./post-integration-policy.mjs";
+import { postIntegrationPolicy, postReleasePolicy } from "./post-integration-policy.mjs";
 import { declaredPublicationRemote } from "./source-publication-policy.mjs";
 import { normalizeVerificationDeclaration } from "./verification-policy.mjs";
 import { runWorkspaceCommand } from "./workspace-command.mjs";
@@ -202,7 +202,7 @@ function releasePolicy(parsed) {
 
 /**
  * Parse a policy file's text strictly. Landing's sections are normalized; every
- * other declaration (`postIntegration`, `generatedPaths`, `sourcePublication`,
+ * other declaration (`postIntegration`, `postRelease`, `generatedPaths`, `sourcePublication`,
  * `requiredChecks`, …) is kept as declared, after validation where Peach owns it.
  */
 export function parseExecutionPolicy(raw, path = EXECUTION_POLICY_PATH) {
@@ -222,6 +222,8 @@ function parsePolicyText(raw) {
   if (parsed.projectCode != null && (typeof parsed.projectCode !== "string" || !/^[a-z0-9]{2,8}$/.test(parsed.projectCode)))
     fail("declares a projectCode that is not 2-8 lowercase letters or digits");
   postIntegrationPolicy(parsed.postIntegration);
+  if (parsed.postRelease !== undefined && parsed.releaseBranch == null) fail("declares postRelease without a releaseBranch");
+  postReleasePolicy(parsed.postRelease);
   generatedPathMatchers(parsed.generatedPaths);
   const sharedPaths = sharedPathList(parsed.sharedPaths);
   const spares = spareCount(parsed.spares);

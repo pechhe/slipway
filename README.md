@@ -213,6 +213,37 @@ candidate.
 4. It pushes the release branch, refusing if the remote moved since the plan, and
    records the release in `~/.slipway/state/releases`.
 
+5. When the candidate's policy declares `postRelease`, it then runs that step
+   against an external target, for example resetting a development database from
+   the release's production one:
+
+   ```json
+   { "postRelease": { "version": 1, "target": "app-development-db:…", "timeoutMs": 1200000,
+       "command": { "executable": "bun", "args": ["scripts/reset-development.ts"], "cwd": "app" },
+       "targetProbe": { "executable": "bun", "args": ["scripts/probe-development.ts"], "cwd": "app" },
+       "environmentKeys": ["NEON_API_KEY"] } }
+   ```
+
+   It is shaped like `postIntegration`, and the candidate's declaration applies.
+   The target follows the integration branch, so the step runs in an exact source
+   view of the local integration branch, read once it holds the target lease (the
+   newest commit a landing has finalized against the target), not of the
+   candidate. The view has no dependencies installed (the command bootstraps what
+   it needs). The step gets the sanitized environment plus `environmentKeys`,
+   `SLIPWAY_RELEASE_CANDIDATE`, `SLIPWAY_RELEASE_MERGE`, `SLIPWAY_RELEASE_SOURCE`
+   (that integration commit) and `SLIPWAY_RELEASE_TARGET`. Its output goes to an
+   owner-only log under `~/.slipway/state/post-release`, never into the result,
+   because it may echo the secrets it was given. Its `targetProbe` must print `{"target": …}` equal to
+   the declared `target` first. It holds the same target lease as landing's
+   `postIntegration` step for that target, so a landing finalizing against it waits
+   (up to about 20 minutes) until the step is done, and vice versa. `timeoutMs` may
+   be up to 15 minutes. It runs only after the release has published, never on a
+   refused or failed release, and its failure never undoes the release: the result
+   is still `"released"` with `postRelease: { "ok": false, "reason": …, "retry":
+   "slipway release --confirm <candidate>" }`, and the command exits 2. A plan
+   reports a step that did not complete as `pendingPostRelease`, and a later
+   `--confirm` of an already released candidate reruns it instead of skipping it.
+
 `land` and `release --confirm` each append one line to
 `~/.slipway/state/metrics/landings.jsonl` or `releases.jsonl`: stage durations in
 milliseconds (`queued` is time waiting for another landing's slot), the outcome,

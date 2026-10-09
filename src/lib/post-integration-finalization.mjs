@@ -12,15 +12,20 @@ import { SourcePreparationFailure, readPostIntegrationPolicy, withFinalizationSo
 import { HistoricalMigrationFailure, artifactKey, coveredByCompletedAncestor, historicalMigrationTip, isAncestor, readState, receiptPath,
   targetKeyOf, verifyHistoricalMigrationSpan, writeTargetOutcome } from "./post-integration-coverage.mjs";
 
-// A separate external-target lease, not a long-held workspace identity transaction.
-function withTargetLease(directory, identity, operation) {
+/**
+ * A separate external-target lease, not a long-held workspace identity transaction.
+ * Landing's post-integration step and a release's post-release step take the same
+ * lease for the same target, so one waits for the other: up to about 20 minutes,
+ * longer than either step's deadline (10 and 15 minutes), before failing.
+ */
+export function withTargetLease(directory, identity, operation) {
   const abort = new AbortController();
   return Effect.runPromise(Effect.acquireUseRelease(
-    Effect.tryPromise(() => lockfile.lock(path.join(directory, `target-${identity}`), {
+    Effect.tryPromise({ try: () => lockfile.lock(path.join(directory, `target-${identity}`), {
       realpath: false, stale: 120_000, update: 10_000,
-      retries: { retries: 200, minTimeout: 25, maxTimeout: 100 },
+      retries: { retries: 1200, minTimeout: 25, maxTimeout: 1000 },
       onCompromised: () => abort.abort(),
-    })),
+    }), catch: (cause) => new Error(`The external target lease is held by another step: ${cause instanceof Error ? cause.message : String(cause)}`) }),
     () => Effect.tryPromise({
       try: () => operation(abort.signal),
       catch: (cause) => cause instanceof Error ? cause : new Error("Post-integration operation failed"),

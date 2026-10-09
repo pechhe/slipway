@@ -30,3 +30,4 @@ export type PostIntegrationInput = {
 };
 
 export function finalizePostIntegration(input: PostIntegrationInput): Promise<PostIntegrationResult>;
+export function withTargetLease<A>(directory: string, identity: string, operation: (signal: AbortSignal) => Promise<A>): Promise<A>;

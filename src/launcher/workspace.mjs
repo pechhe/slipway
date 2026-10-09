@@ -137,6 +137,8 @@ async function runRelease(args) {
   }
   const result = await releaseIntegration(process.cwd(), { ...options, onProgress: (line) => console.error(line) });
   console.log(JSON.stringify(result, null, 2));
+  // A published release whose post-release step failed still stands; 2 tells the caller to retry the step.
+  if (result.ok && "postRelease" in result && result.postRelease && !result.postRelease.ok) return 2;
   return result.ok ? 0 : 1;
 }
 

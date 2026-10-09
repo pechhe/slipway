@@ -8,9 +8,13 @@ import { createWorkspace, landWorkspace } from "../../src/lib/peach-workspace.mj
 /**
  * A project whose `main` is promoted to `release`, which starts at the initial
  * commit on origin. Its release check records the checkout it verified in
- * `verifiedRelease`, unless `checks` declares others.
+ * `verifiedRelease`, unless `checks` declares others. `postRelease` adds that step.
  */
-export async function releaseProject(options: { checks?: (verified: string) => unknown[]; migrations?: boolean; shallow?: boolean } = {}) {
+export async function releaseProject(options: {
+  checks?: (verified: string) => unknown[]; migrations?: boolean; shallow?: boolean;
+  /** The `postRelease` declaration, given the fixture's root and remote. */
+  postRelease?: (root: string, remote: string) => unknown;
+} = {}) {
   const f = await project({
     shallow: options.shallow,
     policy: {
@@ -27,6 +31,7 @@ export async function releaseProject(options: { checks?: (verified: string) => u
   const policy = JSON.parse(await readFile(policyPath, "utf8"));
   policy.requiredReleaseVerification = options.checks?.(verifiedRelease)
     ?? [{ executable: "node", args: ["-e", recordCheckout(verifiedRelease)] }];
+  if (options.postRelease) policy.postRelease = options.postRelease(f.root, f.remote);
   await writeFile(policyPath, JSON.stringify(policy));
   const git = (args: string[]) => execFileSync("git", args, { cwd: f.repo, stdio: "pipe" });
   git(["commit", "-qam", "Declare the release policy"]);

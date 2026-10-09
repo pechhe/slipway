@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.16.0
+
+- **`postRelease` step:** a repository can declare a step `slipway release` runs
+  against an external target once a release has published, shaped like
+  `postIntegration` (target probe, exact source view, timeout) and holding the same
+  target lease, so no landing finalizes against that target meanwhile. A failure
+  keeps the release, is reported with its retry command (`slipway release --confirm
+  <candidate>`, exit 2), shows in later plans as `pendingPostRelease`, and is rerun
+  by the next confirm. The step runs in the local integration branch's exact
+  source, since the target follows it. The target lease now waits up to about 20
+  minutes instead of 20 seconds, and no step's `environmentKeys` may name
+  `SLIPWAY_RELEASE_*`.
+
 ## v1.15.1
 
 - **Landing releases its own workspace when its output is piped:** the
