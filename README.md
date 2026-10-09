@@ -233,7 +233,10 @@ candidate.
    `SLIPWAY_RELEASE_CANDIDATE`, `SLIPWAY_RELEASE_MERGE`, `SLIPWAY_RELEASE_SOURCE`
    (that integration commit) and `SLIPWAY_RELEASE_TARGET`. Its output goes to an
    owner-only log under `~/.slipway/state/post-release`, never into the result,
-   because it may echo the secrets it was given. Its `targetProbe` must print `{"target": …}` equal to
+   because it may echo the secrets it was given. To say why it failed, the step
+   may write one short line to the file `SLIPWAY_RELEASE_REASON_FILE` names; the
+   result's `reason` carries that line (first line only, control characters
+   removed, at most 300 characters), so it must hold no secret. Its `targetProbe` must print `{"target": …}` equal to
    the declared `target` first. It holds the same target lease as landing's
    `postIntegration` step for that target, so a landing finalizing against it waits
    (up to about 20 minutes) until the step is done, and vice versa. `timeoutMs` may

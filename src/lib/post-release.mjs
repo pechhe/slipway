@@ -11,7 +11,7 @@
  * plan reports a failed one, and a later `slipway release --confirm` reruns it
  * (on its own when the candidate is already released) instead of skipping it.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runBoundedProcess, sanitizedProcessEnv } from "./bounded-process.mjs";
 import { checkoutCwd } from "./checkout-cwd.mjs";
@@ -26,7 +26,19 @@ import { writeWorkspaceJson } from "./workspace-transaction.mjs";
 const outcomePath = (targetKey) => path.join(stateHome(), "post-release", `${targetKey}.json`);
 // The step's output can echo the secrets it was given, so it stays in an owner-only log, never in a result.
 const outputPath = (targetKey) => path.join(stateHome(), "post-release", `${targetKey}.log`);
+// The step may write one short line here naming why it failed; it is data, bounded to one line, never its raw output.
+const reasonPath = (targetKey) => path.join(stateHome(), "post-release", `${targetKey}.reason`);
+const MAX_REASON_CHARACTERS = 300;
 export const postReleaseRetry = (candidate) => `slipway release --confirm ${candidate.slice(0, 12)}`;
+
+/** The first line the step wrote to its reason file, stripped of control characters and bounded; null when none. */
+async function readStepReason(file) {
+  const text = await readFile(file, "utf8").catch(() => "");
+  const line = text.slice(0, 4 * MAX_REASON_CHARACTERS).split(/\r?\n/).find((candidate) => candidate.trim())
+    ?.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  if (!line) return null;
+  return line.length > MAX_REASON_CHARACTERS ? `${line.slice(0, MAX_REASON_CHARACTERS - 1)}…` : line;
+}
 
 async function readOutcome(file) {
   try {
@@ -95,8 +107,10 @@ export async function runPostRelease({ root, integrationBranch, candidate, merge
         for (const key of policy.environmentKeys) {
           if (process.env[key] !== undefined) environment[key] = process.env[key];
         }
+        await rm(reasonPath(targetKey), { force: true });
         Object.assign(environment, { SLIPWAY_RELEASE_CANDIDATE: candidate, SLIPWAY_RELEASE_MERGE: merge,
-          SLIPWAY_RELEASE_SOURCE: source, SLIPWAY_RELEASE_TARGET: policy.target });
+          SLIPWAY_RELEASE_SOURCE: source, SLIPWAY_RELEASE_TARGET: policy.target,
+          SLIPWAY_RELEASE_REASON_FILE: reasonPath(targetKey) });
         reason = "External target could not be verified";
         const probe = await runBoundedProcess({
           executable: policy.targetProbe.executable, args: policy.targetProbe.args,
@@ -114,8 +128,11 @@ export async function runPostRelease({ root, integrationBranch, candidate, merge
           env: environment, abortSignal, timeoutMs: policy.timeoutMs, maxOutputBytes: 64 * 1024,
         });
         await writeFile(outputPath(targetKey), `${result.stdout ?? ""}${result.stderr ?? ""}`, { mode: 0o600 });
-        if (result.exitCode !== 0 || result.timedOut || result.error || result.signal)
+        if (result.exitCode !== 0 || result.timedOut || result.error || result.signal) {
+          const stepReason = await readStepReason(reasonPath(targetKey));
+          reason = `Post-release command ${result.timedOut ? "timed out" : "failed"}${stepReason ? `: ${stepReason}` : ""}`;
           throw new Error(reason = `${reason}; its output is in ${outputPath(targetKey)}`);
+        }
       }, sanitizedProcessEnv, abortSignal);
       if (abortSignal.aborted) throw new Error(reason = "Post-release lease lost; the outcome is unknown");
       const complete = { ...evidence, status: "complete" };

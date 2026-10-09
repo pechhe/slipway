@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.17.0
+
+- **A post-release step can say why it failed:** Slipway gives the step
+  `SLIPWAY_RELEASE_REASON_FILE`; one line the step writes there is added, bounded
+  and stripped of control characters, to the failed result's `reason`. The step's
+  output still stays in its owner-only log. A timeout is reported as one.
+
 ## v1.16.0
 
 - **`postRelease` step:** a repository can declare a step `slipway release` runs
