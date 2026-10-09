@@ -113,6 +113,16 @@ function migrationFinalization(value) {
     generate: migrationCommand(value.generate, "generate"), verify: migrationCommand(value.verify, "verify") };
 }
 
+/** `workspaceTeardown`: a bare executable and its args, run with the workspace as cwd before it is removed. */
+function workspaceTeardown(value) {
+  if (value == null) return undefined;
+  if (!isObject(value) || typeof value.executable !== "string" || !EXECUTABLE.test(value.executable)
+    || !Array.isArray(value.args ?? []) || (value.args ?? []).length > MAX_ARGS
+    || (value.args ?? []).some((arg) => typeof arg !== "string" || arg.length > MAX_ARG_LENGTH))
+    fail("workspaceTeardown must be { executable: <bare name>, args?: string[] }");
+  return { executable: value.executable, args: [...(value.args ?? [])] };
+}
+
 /**
  * Compile a repository's `generatedPaths` declaration: repository-relative paths or
  * globs (`*` within one segment, `**` across segments) of generated output that
@@ -187,6 +197,7 @@ function parsePolicyText(raw) {
     ...releasePolicy(parsed),
     postLandVerification: postLandChecks(parsed.postLandVerification ?? []),
     migrationFinalization: migrationFinalization(parsed.migrationFinalization),
+    workspaceTeardown: workspaceTeardown(parsed.workspaceTeardown),
   };
 }
 

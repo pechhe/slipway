@@ -14,6 +14,7 @@ import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { cleanupRetentionReason } from "./workspace-delivery-lifecycle.mjs";
 import { archiveIntegratedWorkspaceEvidence } from "./workspace-finalization.mjs";
+import { runWorkspaceTeardown } from "./workspace-teardown.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 
 /**
@@ -302,11 +303,13 @@ export async function forgetWorkspace(integrationRoot, workspaceName, workspaceP
 
 /**
  * The one retirement step for an isolated checkout: forget it, delete it and its
- * sidecars, then report the release. A host supplies its guarded forget and its
+ * sidecars, then report the release. The repository's `workspaceTeardown` runs
+ * first, best effort, so it also covers cleanup, remove and every sweep. A host supplies its guarded forget and its
  * lifecycle event; the default forgets through JJ and removes the directory.
  */
 export async function retireWorkspace(integrationRoot, workspace, hooks = {}) {
   const metadata = await workspaceMetadata(workspace.name);
+  await runWorkspaceTeardown(integrationRoot, workspace, { timeoutMs: hooks.teardownTimeoutMs });
   await forgetWorkspace(integrationRoot, workspace.name, workspace.root, hooks);
   await rm(metadataPath(workspace.name), { force: true });
   for (const path of landingStatePaths(workspace.name)) await rm(path, { force: true });

@@ -23,6 +23,8 @@ export type ExecutionPolicy = {
   requiredReleaseVerification?: VerificationDeclaration[];
   postLandVerification: PostLandCheck[];
   migrationFinalization: MigrationFinalizationPolicy | null;
+  /** Run in a workspace (cwd = its path) before it is removed; undefined when undeclared. */
+  workspaceTeardown?: { executable: string; args: string[] };
   generatedPaths?: unknown;
   postIntegration?: unknown;
 };

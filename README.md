@@ -66,11 +66,33 @@ lowercase letters or digits) when declared, else two letters derived from the
 checkout folder (`peach-pi` → `pp`, `slipway` → `sl`). Declare it when the folder
 name may change, so existing `ys-412`-style names stay stable.
 
+### Workspace teardown
+
+A repository can declare a command that runs in a workspace just before slipway
+deletes it, for example to stop a dev server started from that checkout:
+
+```json
+{ "workspaceTeardown": { "executable": "ys-preview", "args": ["stop"] } }
+```
+
+`executable` is a bare name resolved on `PATH`; `args` is optional. It runs with
+the workspace as its working directory and `SLIPWAY_WORKSPACE_NAME` and
+`SLIPWAY_WORKSPACE_PATH` set, under a 30 second timeout, read from the primary
+checkout's `slipway.json`. It runs on every path that deletes a checkout:
+`cleanup`, `remove`, `prune --empty`, and the sweeps after landing and at start,
+all through `retireWorkspace`. It is best effort: a missing executable, a
+non-zero exit, a timeout or an unreadable policy is logged to stderr
+(`[teardown] <workspace>: ...`) and never blocks the removal. A registered
+workspace whose checkout is already gone has no working directory, so it is
+forgotten without a teardown. Claiming a spare renames an unused checkout in
+place and does not run one.
+
 ## Environment contract
 
 | Name | Set for |
 | --- | --- |
 | `SLIPWAY_POST_LAND_BASE`, `SLIPWAY_POST_LAND_COMMIT` | Post-land verification commands. |
+| `SLIPWAY_WORKSPACE_NAME`, `SLIPWAY_WORKSPACE_PATH` | The `workspaceTeardown` command. |
 | `SLIPWAY_VERIFICATION_SLOT` | Commands running inside the held verification slot. Set to `held`, it lets a nested landing pass through. |
 | `SLIPWAY_FINALIZATION_COMMIT`, `_KEY`, `_TARGET` | Post-integration finalization commands and target probes. A policy's `environmentKeys` may not start with `SLIPWAY_FINALIZATION_`. |
 

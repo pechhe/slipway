@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.14.0
+
+- **`workspaceTeardown`:** an optional `slipway.json` command (`executable` plus
+  `args`) that runs in a workspace, best effort and under a timeout, before
+  `cleanup`, `remove`, `prune --empty` or a sweep deletes it. A failure is
+  logged and never blocks the removal. See the README.
+
 ## v1.12.0
 
 - **Landed Issue workspaces are released:** the sweep after each landing now
