@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.15.0
 
 - **Cleanup no longer orphans an edit:** cleanup snapshots a workspace's working
   copy once, reads everything else with `--ignore-working-copy` (including the
