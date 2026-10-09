@@ -78,7 +78,15 @@ async function runVerification(context, onProgress = (line) => console.log(line)
 async function ensureLandingDescription(cwd, context, target) {
   const metadata = await workspaceMetadata(context.current.name);
   const issueNumber = typeof metadata?.issueNumber === "number" ? metadata.issueNumber : null;
-  let description = target.description.trim();
+  // The exact text `start` generated is no description: it is replaced, never published.
+  const generated = typeof metadata?.generatedDescription === "string" ? metadata.generatedDescription.trim() : "";
+  if (generated) {
+    const stack = await jj(cwd, ["--ignore-working-copy", "log", "-r", `(${context.integrationBranch}..${target.changeId}) ~ ${target.changeId}`, "--no-graph", "-T",
+      'change_id.short() ++ "\\t" ++ description.first_line() ++ "\\n"']);
+    const stale = stack.split("\n").map((line) => line.split("\t")).find(([, line]) => line?.trim() === generated);
+    if (stale) throw new Error(`Landing needs a real description for commit ${stale[0]}: it still has the generated placeholder "${generated}". Run \`jj describe -r ${stale[0]} -m "<what this change does>"\` and land again`);
+  }
+  let description = generated && target.description.trim() === generated ? "" : target.description.trim();
   if (!description) {
     const issueDescription = issueNumber
       ? await issueTitle(context.integration.root, issueNumber)

@@ -50,7 +50,7 @@ async function shallowProject(failFirst = false) {
   return { f, ledger, workspace };
 }
 
-const land = (path: string) => landWorkspace(path, { onProgress: () => {}, sweepOtherWorkspaces: false });
+const land = (path: string) => landWorkspace(path, { onProgress: () => {}, sweepOtherWorkspaces: false, releaseLandedWorkspace: false });
 
 test("a shallow primary with uncommitted edits finalizes and publishes an Isolated landing", async () => {
   const { f, ledger, workspace } = await shallowProject();

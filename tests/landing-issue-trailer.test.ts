@@ -29,7 +29,7 @@ test("an Isolated landing records its Issue as a trailer on the pushed commit", 
   try {
     await writeFile(join(workspace.workspacePath, "a.txt"), "a\n");
     jj(workspace.workspacePath, ["describe", "-m", "Add a"]);
-    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {} })).ok, true);
+    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false })).ok, true);
     assert.equal(remoteMessage(f.remote), "Add a\n\nIssue: #96601");
   } finally {
     await rm(workspace.workspacePath, { recursive: true, force: true });
@@ -43,7 +43,7 @@ test("an Isolated landing that already references its Issue is not changed", asy
   try {
     await writeFile(join(workspace.workspacePath, "a.txt"), "a\n");
     jj(workspace.workspacePath, ["describe", "-m", "Add a (#96602)"]);
-    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {} })).ok, true);
+    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false })).ok, true);
     assert.equal(remoteMessage(f.remote), "Add a (#96602)");
   } finally {
     await rm(workspace.workspacePath, { recursive: true, force: true });
@@ -57,7 +57,7 @@ test("a landing without an Issue adds no trailer", async () => {
   try {
     await writeFile(join(workspace.workspacePath, "a.txt"), "a\n");
     jj(workspace.workspacePath, ["describe", "-m", "Add a"]);
-    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {} })).ok, true);
+    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false })).ok, true);
     assert.equal(remoteMessage(f.remote), "Add a");
   } finally {
     await rm(workspace.workspacePath, { recursive: true, force: true });

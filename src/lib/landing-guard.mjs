@@ -3,10 +3,17 @@
  * integration branch moves and is published only through `slipway land`, and a
  * declared release branch only through `slipway release`.
  * Pushing feature bookmarks for a pull request stays allowed.
+ *
+ * It also keeps work from being orphaned: in a secondary workspace of such a
+ * repository, a command that moves `@` away from a non-empty, unintegrated commit
+ * without a real description (`jj new`, `jj edit`, `jj workspace forget`, ...) is
+ * refused until the work is described, abandoned or landed.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { jjWorkspaceRoot, run } from "./workspace-jj.mjs";
+import { workspaceMetadata } from "./workspace-state.mjs";
 import { EXECUTION_POLICY_PROBE_PATHS, parseExecutionPolicy, selectExecutionPolicyPath } from "./execution-policy.mjs";
 
 const LAND = "Use `slipway land` (or `--direct` in a Direct checkout): it verifies, integrates and pushes.";
@@ -210,6 +217,60 @@ function targetDirectory(name, args, cwd, line) {
 
 const expandHome = (target) => (target === "~" ? homedir() : target.startsWith("~/") ? join(homedir(), target.slice(2)) : target);
 
+const ORPHAN_REMEDY = "Run `jj describe -m \"<what this change does>\"` to keep it, `jj abandon` to discard it, or `slipway land` to ship it.";
+
+/** The verbs that move `@` off its commit, in one place. */
+const MOVING_VERBS = ["new", "edit", "checkout", "co", "next", "prev"];
+
+/**
+ * The workspaces whose working copy a jj command would leave behind: `[]` for the
+ * current one (`new`, `edit <rev>`, `checkout`, `next`/`prev`), the named ones for
+ * `workspace forget` (the current one when none is named), null when it moves nothing.
+ */
+function abandonedWorkspaces(args) {
+  const [verb, ...rest] = subcommand(args, VALUED.jj);
+  const operands = rest.filter((arg) => !arg.startsWith("-"));
+  if (MOVING_VERBS.includes(verb)) return (verb === "new" && rest.includes("--no-edit")) || (verb === "edit" && operands.every((arg) => arg === "@")) ? null : [];
+  if (verb === "workspace" && operands[0] === "forget") return operands.slice(1);
+  return null;
+}
+
+/**
+ * A deny reason when this jj command would abandon unfinished work in a Slipway
+ * workspace: `dir` is in a governed repository (a secondary workspace, unless the
+ * command forgets named workspaces, which is judged from any checkout) and a workspace
+ * the command leaves (or forgets) has a non-empty, unintegrated `@` that is undescribed
+ * or still carries the description `start` generated. One jj query, which snapshots as
+ * the command itself would; fails open when jj cannot be queried.
+ */
+async function orphanedWork(args, dir, governed) {
+  const leaves = abandonedWorkspaces(args);
+  if (!leaves) return null;
+  try {
+    const root = await jjWorkspaceRoot(dir);
+    // A secondary workspace's `.jj/repo` is a pointer file; the primary's is the repository directory.
+    if (!root) return null;
+    if (!leaves.length && !(await stat(join(root, ".jj", "repo"))).isFile()) return null;
+    const integrated = governed.branches.map((branch) => `bookmarks(exact:${JSON.stringify(branch)})`).join(" | ");
+    const targets = leaves.length ? leaves.map((name) => `${JSON.stringify(name)}@`).join(" | ") : "@";
+    const queried = await run("jj", ["--color=never", "log", "-r", `(${targets}) ~ ::(${integrated})`, "--no-graph", "-T",
+      'working_copies ++ "\t" ++ empty ++ "\t" ++ description.first_line() ++ "\n"'], { cwd: root, timeoutMs: 15_000 });
+    if (queried.code !== 0) return null;
+    for (const row of queried.stdout.split("\n").filter(Boolean)) {
+      const [copies, empty, description = ""] = row.split("\t");
+      if (empty === "true") continue;
+      const names = copies.trim().split(/\s+/).filter((name) => name.endsWith("@")).map((name) => name.slice(0, -1));
+      const generated = (await Promise.all(names.map(async (name) => (await workspaceMetadata(name))?.generatedDescription))).filter(Boolean);
+      const placeholder = description.trim() !== "" && generated.includes(description.trim());
+      if (description.trim() && !placeholder) continue;
+      return `Workspace ${names.join(", ") || "here"} has a working-copy commit with changes that are not integrated and ${placeholder ? "only the generated `wip:` description" : "no description"}, and this command would leave them behind as an orphan. ${ORPHAN_REMEDY}`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Claude Code hook input → a deny decision, or null to let the call proceed.
  * Each command is judged by the repository it targets: `git -C <dir>` and
@@ -224,7 +285,8 @@ export async function landingGuardDecision(input) {
     const [program, ...args] = command;
     const governed = await governance(targetDirectory(program.split("/").pop(), args, cwd, input.tool_input.command));
     const bypass = governed && commandBypass(command, governed.branches, governed.release);
-    const reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
+    let reason = bypass && governed.retired ? `${bypass} ${governed.retired}.` : bypass;
+    if (!reason && governed && program.split("/").pop() === "jj") reason = await orphanedWork(args, targetDirectory("jj", args, cwd, input.tool_input.command), governed);
     if (reason) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
   }
   return null;

@@ -1,145 +1,21 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, statSync } from "node:fs";
-import { mkdir, readdir, readlink, realpath, rm } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { readdir, readlink, realpath, rm } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { artifactPublished, finishLandedWorkspace, publicationRemote } from "./landing-steps.mjs";
-import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
-import { repositoryProjectCode, revisionExists, run, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
-import { metadataHome, poolRefillLogPath, stateHome, workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
-import { landingStatePaths, listWorkspaces, lockPath, metadataPath, readLandingState, renameWorkspace, workspaceMetadata } from "./workspace-state.mjs";
+import { revisionExists, run, workingCopyCommit, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
+import { workspaceStorageHomes } from "./workspace-paths.mjs";
+import { landingStatePaths, listWorkspaces, lockPath, metadataPath, readLandingState, workspaceMetadata } from "./workspace-state.mjs";
 import { generatedPathMatchers, readExecutionPolicy } from "./execution-policy.mjs";
-import { installInputFingerprint } from "./install-inputs.mjs";
 import { finalizePostIntegration } from "./post-integration-finalization.mjs";
 import { cleanupRetentionReason } from "./workspace-delivery-lifecycle.mjs";
 import { archiveIntegratedWorkspaceEvidence } from "./workspace-finalization.mjs";
 import { runWorkspaceTeardown } from "./workspace-teardown.mjs";
-import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
-
-/**
- * One prepared, unassigned JJ workspace per Project. Assignment renames it to
- * the task's name (its directory is stable), moves it to the current integration
- * head and reconciles dependencies there. A spare holds no work, so it is freely
- * replaceable; only spares are ever created or claimed here.
- */
+import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 
 async function jj(cwd, args) {
   const result = await run("jj", ["--color=never", ...args], { cwd });
   if (result.code !== 0) throw new Error(`jj ${args.slice(0, 2).join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
-}
-
-/** Unassigned spares for this repository that no live process is preparing. */
-export async function readySpares(cwd) {
-  return (await listWorkspaces(cwd)).filter((workspace) =>
-    workspace.metadata?.spare === true && workspace.metadata?.prepared === true && workspace.root && existsSync(workspace.root));
-}
-
-/** Prepare one spare under the allocation transaction, never a session writer lease. */
-export async function provisionSpare(cwd = process.cwd()) {
-  const context = await workspaceContext(cwd);
-  if (!context) return { provisioned: false, reason: "not-jj" };
-  return withWorkspaceTransaction(`pool:${context.integration.root}`, async () => {
-    const spare = (await listWorkspaces(cwd)).find((workspace) => workspace.metadata?.spare === true);
-    if (spare?.metadata?.prepared === true) return { provisioned: false, reason: "spare-exists" };
-    const name = spare?.name ?? `${await repositoryProjectCode(context.integration.root)}-spare-${randomUUID().slice(0, 6)}`;
-    const workspacePath = spare?.root ?? join(workspaceHome(), name);
-    if (!spare) {
-      await mkdir(workspaceHome(), { recursive: true, mode: 0o700 });
-      await jj(context.integration.root, ["workspace", "add", "--name", name, "--revision", context.integrationBranch, workspacePath]);
-      await mkdir(metadataHome(), { recursive: true, mode: 0o700 });
-      await writeWorkspaceJson(metadataPath(name), {
-        version: 1, workspaceName: name, workspacePath, integrationRoot: context.integration.root,
-        spare: true, prepared: false, createdAt: new Date().toISOString(),
-      });
-    }
-    // An interrupted preparation remains unassigned and can be retried here.
-    const { state, packageManager, installInputs } = await prepareWorkspaceDependencies(workspacePath, { quiet: true, recordInputs: true });
-    await writeWorkspaceJson(metadataPath(name), {
-      ...await workspaceMetadata(name), prepared: true, preparedDependencies: { state, packageManager, installInputs },
-    });
-    return { provisioned: true, workspacePath };
-  });
-}
-
-/**
- * The spare's provisioned dependencies as readiness, when they are still exactly
- * what installing at its refreshed `@` would produce: recorded install inputs
- * equal the current ones and the installed tree is still on disk. Otherwise null.
- */
-async function reusableDependencies(root, prepared) {
-  if (!prepared?.installInputs || (prepared.state !== "ready" && prepared.state !== "not_required")) return null;
-  if (prepared.state === "ready" && !existsSync(join(root, "node_modules"))) return null;
-  if (await installInputFingerprint(root) !== prepared.installInputs) return null;
-  return { state: prepared.state, packageManager: prepared.packageManager ?? null, installInputs: prepared.installInputs, reused: true };
-}
-
-/**
- * Exclusively assign a ready spare as workspace `name`, refreshed to the current
- * integration head. `dependencies` is the reusable readiness when the refresh
- * left the install inputs unchanged, else null and the caller installs. Returns
- * null when no spare is ready, including while one is being provisioned (which
- * holds the pool for its whole install); the caller then provisions
- * synchronously. Never falls back to the primary checkout.
- */
-export async function claimSpare(cwd, name) {
-  const context = await workspaceContext(cwd);
-  if (!context) return null;
-  return await withWorkspaceTransaction(`pool:${context.integration.root}`, () => claimReadySpare(cwd, context, name), { wait: false })
-    .catch((error) => { if (error?.code === "ELOCKED") return null; throw error; });
-}
-
-async function claimReadySpare(cwd, context, name) {
-  const [spare] = await readySpares(cwd);
-  if (!spare) return null;
-  const { name: assigned } = await renameWorkspace(spare.root, name);
-  await jj(spare.root, ["new", context.integrationBranch]);
-  const dependencies = await reusableDependencies(spare.root, spare.metadata?.preparedDependencies);
-  const { spare: _released, prepared: _prepared, preparedDependencies: _dependencies, createdAt: _created, ...metadata } =
-    (await workspaceMetadata(assigned)) ?? {};
-  await writeWorkspaceJson(metadataPath(assigned), { ...metadata, workspaceName: assigned, claimedAt: new Date().toISOString() });
-  return { root: spare.root, name: assigned, dependencies };
-}
-
-const REFILL_LOG_LIMIT = 1024 * 1024;
-
-/**
- * Refill the repository's spare pool without blocking the caller: a detached,
- * `nice`d child runs the closure's own refill entry (`spare-refill.mjs`, beside
- * this module in source and in the installed bundle) for the integration root,
- * appending its outcome to the pool-refill log in the state home. Concurrent refills
- * serialise on the pool transaction, and a ready spare makes one a no-op. While
- * a refill is in flight, a claim finds no ready spare and installs a fresh
- * workspace instead of waiting. `started` means the child process spawned; its
- * outcome is only in the log. `command` replaces the spawned runner (tests); the
- * integration root is always its last argument.
- */
-export async function startSpareRefill(cwd = process.cwd(), options = {}) {
-  const context = await workspaceContext(cwd);
-  if (!context) return { started: false, reason: "not-jj" };
-  await mkdir(stateHome(), { recursive: true, mode: 0o700 });
-  const logPath = poolRefillLogPath();
-  let oversized = false;
-  try { oversized = statSync(logPath).size > REFILL_LOG_LIMIT; } catch { /* no log yet */ }
-  const log = openSync(logPath, oversized ? "w" : "a", 0o600);
-  try {
-    const [executable, ...args] = options.command ?? ["nice", "-n", "10", process.execPath, fileURLToPath(new URL("./spare-refill.mjs", import.meta.url))];
-    const child = spawn(executable, [...args, context.integration.root], {
-      cwd: context.integration.root,
-      detached: true,
-      stdio: ["ignore", log, log],
-    });
-    const spawned = await new Promise((resolveSpawn) => {
-      child.once("spawn", () => resolveSpawn(null));
-      child.once("error", (error) => resolveSpawn(error));
-    });
-    if (spawned) return { started: false, reason: spawned.message, logPath };
-    child.unref();
-    return { started: true, pid: child.pid, logPath };
-  } finally {
-    closeSync(log);
-  }
 }
 
 const REPRODUCIBLE = new Set([
@@ -172,7 +48,8 @@ async function declaredGeneratedPaths(integrationRoot) {
 /**
  * Files in a checkout that are neither tracked nor reproducible (a built-in tool
  * cache or a path the repository declares as generated): ignored or unexplained
- * material that cleanup must not destroy. Symlinks are reported, never followed,
+ * material that cleanup must not destroy. "Tracked" is the last snapshot of the
+ * working copy; this never takes a snapshot itself. Symlinks are reported, never followed,
  * except one pointing into `primaryRoot` (the primary checkout), whose target
  * outlives the checkout. Returns at most `limit` repository-relative paths.
  */
@@ -182,7 +59,8 @@ export async function uniqueUntrackedMaterial(root, limit = 5, generated = [], p
     const target = resolve(directory, await readlink(join(directory, name)));
     return target === primary || target.startsWith(primary + sep);
   };
-  const tracked = new Set((await jj(root, ["file", "list"])).split("\n").filter(Boolean));
+  // Never snapshots: a snapshot here would turn an on-disk edit into a commit no caller has judged.
+  const tracked = new Set((await jj(root, ["--ignore-working-copy", "file", "list"])).split("\n").filter(Boolean));
   const found = [];
   async function walk(directory, relative) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -212,6 +90,29 @@ export async function cleanupLandedWorkspace(cwd = process.cwd(), hooks = {}) {
   return withWorkspaceTransaction(`writer:${context.current.name}`, () => cleanupLandedWorkspaceUnlocked(cwd, hooks));
 }
 
+/** Thrown when a checkout's working copy changed between cleanup's judgement and its retirement. */
+export class WorkingCopyChangedError extends Error {
+  constructor(workspaceName) {
+    super(`jj:${workspaceName} changed while it was being retired; kept`);
+    this.code = "WORKING_COPY_CHANGED";
+  }
+}
+
+/**
+ * Judge a checkout once: snapshot its working copy, then read everything else
+ * from that snapshot (`--ignore-working-copy`). Returns the judged working-copy
+ * commit and why the checkout must be kept, if it must.
+ */
+async function judgeCheckout(context) {
+  const commit = await workingCopyCommit(context.current.root);
+  // Follow-up work on top of the landed artifact is never deleted.
+  if (await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch, { ignoreWorkingCopy: true })) {
+    return { commit, retained: { cleaned: false, reason: "new-unlanded-work" } };
+  }
+  const unique = await uniqueUntrackedMaterial(context.current.root, 5, await declaredGeneratedPaths(context.integration.root), context.integration.root);
+  return { commit, retained: unique.length ? { cleaned: false, reason: "unique-files", paths: unique } : null };
+}
+
 async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   const context = await workspaceContext(cwd);
   if (!context || context.current.name === "default") return { cleaned: false, reason: "not-isolated" };
@@ -220,19 +121,18 @@ async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   if (resolve(state.workspacePath) !== resolve(context.current.root) || state.workspaceName !== context.current.name) {
     throw new Error("Landing state does not match the current workspace");
   }
-  // Follow-up work on top of the landed artifact is never deleted.
-  if (await workspaceHasUnintegratedWork(context.current.root, context.integrationBranch)) {
-    return { cleaned: false, reason: "new-unlanded-work" };
-  }
-  const unique = await retainedWorkspaceMaterial(context.current.root, context.integration.root);
-  if (unique.length) return { cleaned: false, reason: "unique-files", paths: unique };
+  let judged = await judgeCheckout(context);
+  if (judged.retained) return judged.retained;
   // Pending housekeeping is retried below; every other retention reason holds.
   const retention = cleanupRetentionReason({ ...state, cleanupPending: false }, context, await workspaceMetadata(context.current.name));
   if (retention) return { cleaned: false, reason: retention };
   if (!await revisionExists(context.integration.root, `${state.artifactCommitId} & ::${state.integrationBranch}`))
     throw new Error("Cannot prove the landed artifact is integrated; workspace retained");
-  if (state.cleanupPending && (await finishLandedWorkspace(context, state)).cleanupPending) {
-    return { cleaned: false, reason: "housekeeping-pending" };
+  if (state.cleanupPending) {
+    if ((await finishLandedWorkspace(context, state)).cleanupPending) return { cleaned: false, reason: "housekeeping-pending" };
+    // Housekeeping moves the working copy off the artifact: judge the new state.
+    judged = await judgeCheckout(context);
+    if (judged.retained) return judged.retained;
   }
   // A pending or failed external step keeps the workspace for its land retry.
   const gitDirectory = await jj(context.integration.root, ["--ignore-working-copy", "git", "root"]);
@@ -249,7 +149,13 @@ async function cleanupLandedWorkspaceUnlocked(cwd, hooks) {
   // Cleanup deletes only checkouts beneath slipway workspace storage.
   if (!await withinWorkspaceStorage(context.current.root)) return { cleaned: false, reason: "outside-workspace-storage" };
   await archiveIntegratedWorkspaceEvidence(gitDirectory, state);
-  await retireWorkspace(context.integration.root, context.current, hooks);
+  await hooks.afterChecks?.();
+  try {
+    await retireWorkspace(context.integration.root, context.current, hooks, { expectedCommitId: judged.commit });
+  } catch (error) {
+    if (error instanceof WorkingCopyChangedError) return { cleaned: false, reason: "working-copy-changed" };
+    throw error;
+  }
   return superseded
     ? { cleaned: true, supersededPostIntegration: { status: external.status, attempt: external.attempt, reason: external.reason } }
     : { cleaned: true };
@@ -268,7 +174,9 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
     if (!await withinWorkspaceStorage(target.root))
       throw new Error("Refusing to remove a workspace outside ~/.slipway/workspaces and ~/.pi/workspaces");
     const metadata = await workspaceMetadata(workspaceName);
-    const hasWork = await workspaceHasUnintegratedWork(target.root, context.integrationBranch).catch(
+    // Snapshot once; retirement then refuses a working copy that moved since.
+    const judged = await workingCopyCommit(target.root).catch(() => null);
+    const hasWork = judged === null || await workspaceHasUnintegratedWork(target.root, context.integrationBranch, { ignoreWorkingCopy: true }).catch(
       () => true,
     );
     if (hasWork && options.allowWork !== true)
@@ -279,7 +187,8 @@ export async function removeWorkspace(cwd, workspaceName, options = {}) {
       throw new Error(
         `jj:${workspaceName} is attached to Issue #${metadata.issueNumber}; explicit deletion confirmation is required`,
       );
-    await retireWorkspace(context.integration.root, { name: workspaceName, root: target.root });
+    await retireWorkspace(context.integration.root, { name: workspaceName, root: target.root }, {},
+      judged === null ? {} : { expectedCommitId: judged });
     return { workspaceName, hasWork, issueNumber: metadata?.issueNumber ?? null };
   });
 }
@@ -306,10 +215,18 @@ export async function forgetWorkspace(integrationRoot, workspaceName, workspaceP
  * sidecars, then report the release. The repository's `workspaceTeardown` runs
  * first, best effort, so it also covers cleanup, remove and every sweep. A host supplies its guarded forget and its
  * lifecycle event; the default forgets through JJ and removes the directory.
+ * With `options.expectedCommitId`, a working copy that no longer matches it is
+ * kept and `WorkingCopyChangedError` thrown.
  */
-export async function retireWorkspace(integrationRoot, workspace, hooks = {}) {
+export async function retireWorkspace(integrationRoot, workspace, hooks = {}, options = {}) {
   const metadata = await workspaceMetadata(workspace.name);
   await runWorkspaceTeardown(integrationRoot, workspace, { timeoutMs: hooks.teardownTimeoutMs });
+  // The last look before the point of no return, after the teardown: a working copy that moved
+  // since it was judged (an edit snapshots into a new commit) is never forgotten, or its commit would be orphaned.
+  if (options.expectedCommitId && workspace.root && existsSync(workspace.root)) {
+    const current = await workingCopyCommit(workspace.root).catch(() => null);
+    if (current !== options.expectedCommitId) throw new WorkingCopyChangedError(workspace.name);
+  }
   await forgetWorkspace(integrationRoot, workspace.name, workspace.root, hooks);
   await rm(metadataPath(workspace.name), { force: true });
   for (const path of landingStatePaths(workspace.name)) await rm(path, { force: true });

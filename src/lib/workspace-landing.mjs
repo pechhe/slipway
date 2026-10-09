@@ -7,6 +7,8 @@ import { createWorkspace } from "./workspace-create.mjs";
 import { jj, revisionExists, revisionFacts, workspaceContext, workspaceHasUnintegratedWork } from "./workspace-jj.mjs";
 import { assertWorkspaceMutationAllowed, readLandingState, statePath, workspaceMetadata } from "./workspace-state.mjs";
 import { sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
+import { cleanupLandedWorkspace, describeRetention } from "./workspace-lifecycle.mjs";
+import { callerPids, describeHolders, workspaceHolders } from "./workspace-holders.mjs";
 import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 import { readExecutionPolicy, readExecutionPolicyAtCommit } from "./execution-policy.mjs";
 import { resolve } from "node:path";
@@ -91,7 +93,23 @@ export async function landWorkspace(cwd = process.cwd(), options = {}) {
   // itself. The sweep never fails the landing.
   const sweep = result.ok && options.sweepOtherWorkspaces !== false
     ? await sweepDisposableWorkspaces(context.integration.root, { protectedRoots: [cwd, context.current.root] }).catch(() => undefined) : undefined;
-  return { ...started, ...(sweep ? { sweep } : {}), ...(postLandFailure ? { postLandWarning: postLandFailure } : {}) };
+  // Last: the caller's own checkout. This process and the session that ran it do not hold it
+  // (they are leaving); anything else with its working directory inside does.
+  const released = result.ok && options.releaseLandedWorkspace !== false && context.current.name !== "default"
+    ? await releaseLandedWorkspace(context).catch((error) => ({ cleaned: false, reason: error instanceof Error ? error.message : String(error) })) : undefined;
+  return { ...started, ...(sweep ? { sweep } : {}), ...(released ? { released } : {}), ...(postLandFailure ? { postLandWarning: postLandFailure } : {}) };
+}
+
+/**
+ * Remove the workspace this landing delivered, as `slipway cleanup` would. Anything
+ * else working inside it keeps it, and is named so its owner can stop it.
+ */
+async function releaseLandedWorkspace(context) {
+  const holders = await workspaceHolders(context.current.root, { ignore: await callerPids() });
+  if (!holders) return { cleaned: false, reason: "process working directories unavailable" };
+  if (holders.length) return { cleaned: false, reason: `in use by a live process: ${describeHolders(holders)}`, holders };
+  const result = await cleanupLandedWorkspace(context.current.root);
+  return result.cleaned ? { cleaned: true } : { cleaned: false, reason: describeRetention(result) };
 }
 
 async function landInSlot(cwd, context, remote, options) {

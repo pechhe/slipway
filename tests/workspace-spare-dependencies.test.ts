@@ -1,11 +1,12 @@
 import { jj, project } from "./support/workspace-project.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "vite-plus/test";
 import { createWorkspace, provisionSpare, readySpares, startSpareRefill } from "../src/lib/peach-workspace.mjs";
+import { listWorkspaces } from "../src/lib/workspace-state.mjs";
 import { metadataPath, workspaceMetadata } from "../src/lib/workspace-state.mjs";
 import { installInputFingerprint } from "../src/lib/install-inputs.mjs";
 import { withWorkspaceTransaction } from "../src/lib/workspace-transaction.mjs";
@@ -29,8 +30,8 @@ function advance(repo: string, message: string) {
  * A Bun workspace project whose root `postinstall` runs a tracked script that
  * imports a sibling: each install appends a line to `installs.log`.
  */
-async function bunProject() {
-  const f = await project({ ignore: "node_modules\n" });
+async function bunProject(policy?: Record<string, unknown>) {
+  const f = await project({ ignore: "node_modules\n", policy });
   const installs = join(f.root, "installs.log");
   process.env.FIXTURE_INSTALL_LOG = installs;
   await write(f.repo, {
@@ -219,7 +220,7 @@ test("the install-input fingerprint follows file: dependencies, patch paths, lif
   }
 }, 120_000);
 
-test("a claim while a spare is being provisioned installs a fresh workspace instead of waiting", async () => {
+test("a claim that cannot take the pool in time installs a fresh workspace instead of waiting", async () => {
   const f = await bunProject();
   try {
     await provisionSpare(f.repo);
@@ -326,3 +327,87 @@ test("concurrent starts of one Issue prepare its checkout one at a time", async 
     await f.dispose();
   }
 }, 120_000);
+
+test("the pool keeps as many spares as declared, counting those still being prepared", async () => {
+  const f = await bunProject({ spares: 2 });
+  try {
+    const [first, second] = await Promise.all([provisionSpare(f.repo), provisionSpare(f.repo)]);
+    assert.deepEqual([first.provisioned, second.provisioned], [true, true]);
+    assert.notEqual(first.name, second.name, "concurrent refills prepare different spares");
+    assert.equal((await readySpares(f.repo)).length, 2);
+    assert.deepEqual(await provisionSpare(f.repo), { provisioned: false, reason: "spare-exists" });
+  } finally {
+    await f.dispose();
+  }
+}, 180_000);
+
+test("a pool of none provisions nothing", async () => {
+  const f = await bunProject({ spares: 0 });
+  try {
+    assert.deepEqual(await provisionSpare(f.repo), { provisioned: false, reason: "pool-disabled" });
+  } finally {
+    await f.dispose();
+  }
+}, 120_000);
+
+test("a claim during an in-flight refill takes a ready spare and leaves the one being prepared", async () => {
+  const f = await bunProject({ spares: 2 });
+  try {
+    const [ready] = [await provisionSpare(f.repo)];
+    assert.equal(ready.provisioned, true);
+    process.env.FIXTURE_INSTALL_DELAY_MS = "6000";
+    const refill = provisionSpare(f.repo);
+    const deadline = Date.now() + 60_000;
+    let inFlight: string | undefined;
+    while (!inFlight) {
+      assert.ok(Date.now() < deadline, "the second spare registered");
+      inFlight = (await listWorkspaces(f.repo)).find((workspace) => workspace.metadata?.spare === true && workspace.metadata?.prepared === false)?.name;
+      if (!inFlight) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const created = await createWorkspace("task", f.repo);
+    assert.equal(created.pooled, true, "the claim did not install synchronously");
+    assert.equal(created.workspacePath, ready.workspacePath, "it took the ready spare");
+    assert.ok((await listWorkspaces(f.repo)).some((workspace) => workspace.name === inFlight), "the spare being prepared was left alone");
+    const finished = await refill;
+    assert.equal(finished.provisioned, true);
+    assert.deepEqual((await readySpares(f.repo)).map((spare) => spare.name), [inFlight]);
+  } finally {
+    delete process.env.FIXTURE_INSTALL_DELAY_MS;
+    await f.dispose();
+  }
+}, 180_000);
+
+test("a refill adopts a spare whose preparer died and finishes it", async () => {
+  const f = await bunProject();
+  try {
+    const first = await provisionSpare(f.repo);
+    const [spare] = await readySpares(f.repo);
+    await writeFile(metadataPath(spare!.name), JSON.stringify({ ...await workspaceMetadata(spare!.name), prepared: false, preparingPid: 2 ** 22 + 1 }));
+    assert.equal((await readySpares(f.repo)).length, 0);
+    const adopted = await provisionSpare(f.repo);
+    assert.deepEqual([adopted.provisioned, adopted.name], [true, first.name]);
+    assert.equal((await readySpares(f.repo)).length, 1);
+  } finally {
+    await f.dispose();
+  }
+}, 180_000);
+
+test("an install with no spare to claim clones node_modules from the primary checkout, then verifies it", async () => {
+  const f = await bunProject();
+  try {
+    const created = await createWorkspace("seeded", f.repo);
+    assert.equal(created.pooled, false);
+    assert.equal((created.readiness as { seeded?: boolean }).seeded, true, "the primary's install inputs matched, so its node_modules seeded this one");
+    assert.equal(await f.count(), 1, "the verifying install ran");
+    const modules = join(created.workspacePath, "node_modules");
+    assert.ok(existsSync(join(modules, ".bun")), "the cloned tree is in place");
+    for (const entry of await readdir(modules)) {
+      const path = join(modules, entry);
+      if (!lstatSync(path).isSymbolicLink()) continue;
+      assert.ok(!readlinkSync(path).startsWith("/"), `${entry} is a relative link, so it resolves inside the new checkout`);
+      assert.ok(existsSync(path), `${entry} resolves`);
+    }
+  } finally {
+    await f.dispose();
+  }
+}, 180_000);

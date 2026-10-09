@@ -8,7 +8,7 @@ import { test } from "vite-plus/test";
 import { createWorkspace, landWorkspace } from "../src/lib/peach-workspace.mjs";
 import { readLandingState } from "../src/lib/workspace-state.mjs";
 
-const land = (cwd: string) => landWorkspace(cwd, { onProgress: () => {}, sweepOtherWorkspaces: false });
+const land = (cwd: string) => landWorkspace(cwd, { onProgress: () => {}, sweepOtherWorkspaces: false, releaseLandedWorkspace: false });
 
 async function divergedLanding(changePolicy = false, failRecoveryVerification = false) {
   const external = await mkdtemp(join(tmpdir(), "slipway-publication-recovery-"));

@@ -49,7 +49,8 @@ export async function startPostLandVerification({ integrationRoot, gitDirectory,
   let pid = process.pid;
   if (runner) {
     const [executable, ...args] = runner;
-    const child = spawn(executable, [...args, file], { detached: true, stdio: "ignore", env });
+    // From the integration checkout, never the landing's own workspace: a detached run that outlives it must not hold it.
+    const child = spawn(executable, [...args, file], { detached: true, stdio: "ignore", env, cwd: integrationRoot });
     child.once("error", (error) => void refuse(error).catch(() => {}));
     child.unref();
     pid = child.pid ?? 0;

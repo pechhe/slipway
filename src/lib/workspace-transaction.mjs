@@ -6,7 +6,8 @@ import { transactionHome } from "./workspace-paths.mjs";
 
 // Only short native identity/owner transitions are serialized here. Never use
 // this repository key around model work, verification or a connector request.
-// With `wait: false` a held transaction fails at once with code ELOCKED.
+// With `wait: false` a held transaction fails at once with code ELOCKED; with
+// `waitMs` it waits at most that long before failing the same way.
 export async function withWorkspaceTransaction(key, operation, options = {}) {
   const root = transactionHome();
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -16,7 +17,9 @@ export async function withWorkspaceTransaction(key, operation, options = {}) {
     // A healthy holder refreshes every 10 seconds. Wait beyond the stale
     // boundary so loaded workspace provisioning serializes instead of failing
     // while that holder is still making progress.
-    retries: options.wait === false ? 0 : { retries: 1400, minTimeout: 25, maxTimeout: 100 },
+    retries: options.wait === false ? 0
+      : options.waitMs ? { retries: Math.ceil(options.waitMs / 50), minTimeout: 25, maxTimeout: 50 }
+      : { retries: 1400, minTimeout: 25, maxTimeout: 100 },
   });
   try { return await operation(); } finally { await release(); }
 }

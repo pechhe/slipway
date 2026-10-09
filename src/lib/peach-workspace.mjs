@@ -15,9 +15,9 @@ export {
 } from "./workspace-state.mjs";
 export { createWorkspace, findIssueWorkspace, recoverIssueWorkspace } from "./workspace-create.mjs";
 export {
-  cleanupLandedWorkspace, describeRetention, provisionSpare, readySpares, removeWorkspace, retainedWorkspaceMaterial,
-  retireWorkspace, startSpareRefill,
+  cleanupLandedWorkspace, describeRetention, removeWorkspace, retainedWorkspaceMaterial, retireWorkspace,
 } from "./workspace-lifecycle.mjs";
+export { provisionSpare, readySpares, startSpareRefill } from "./workspace-pool.mjs";
 export { pruneEmptyWorkspaces, sweepDisposableWorkspaces } from "./workspace-sweep.mjs";
 export { withWorkspaceTransaction } from "./workspace-transaction.mjs";
 export { acquirePrimaryWriter, activePrimaryWriter, releasePrimaryWriter } from "./primary-checkout-writer.mjs";

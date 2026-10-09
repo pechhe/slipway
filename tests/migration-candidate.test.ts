@@ -43,10 +43,11 @@ test("actual CLI prepares dependency drift from final rebase before generating a
     assert.equal(existsSync(join(f.workspace, "node_modules/fixture-dependency")), false);
     const out = native(f.workspace, ["land", "--local-only"]);
     assert.match(out, /0001|commitId/);
-    assert.equal(await readFile(join(f.workspace, "migrations/0001.sql"), "utf8"), "generated");
+    // The landing removed its own workspace, so read what it integrated from the repository.
+    assert.equal(jj(f.repo, ["file", "show", "-r", "main", "migrations/0001.sql"]), "generated");
     assert.equal(await readFile(join(f.root, "migration-verified"), "utf8"), "yes");
     assert.match(await readFile(f.verified, "utf8"), /workspaces/);
-    assert.equal(jj(f.workspace, ["log", "-r", "main", "--no-graph", "-T", "commit_id"]), jj(f.workspace, ["log", "-r", "@-", "--no-graph", "-T", "commit_id"]));
+    assert.equal(existsSync(f.workspace), false, "the landed workspace was released");
   } finally { await f.dispose(); }
 }, 60000);
 

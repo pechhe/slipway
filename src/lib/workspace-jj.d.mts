@@ -30,10 +30,15 @@ export function repositoryProjectCode(root: string): Promise<string>;
 export function taskWorkspaceName(project: string, issueNumber?: number | null, task?: string | null): string;
 export function legacyIssueWorkspaceName(folderName: string, issueNumber: number): string;
 export function parseWorkspaceList(output: string): Array<Pick<WorkspaceEntry, "name" | "root" | "changeId" | "commitId">>;
-export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string): Promise<boolean>;
+export function workspaceHasUnintegratedWork(workspaceRoot: string, integrationBranch: string, options?: { ignoreWorkingCopy?: boolean }): Promise<boolean>;
+/** The working-copy commit id, snapshotting the on-disk tree first. */
+export function workingCopyCommit(workspaceRoot: string): Promise<string>;
+/** The Issue's state (`OPEN`/`CLOSED`) per `gh`, or null when it cannot be read. */
+export function issueState(repositoryRoot: string, issueNumber: number): Promise<string | null>;
 export function revisionExists(cwd: string, revision: string): Promise<boolean>;
 export function issueTitle(repositoryRoot: string, issueNumber: number): Promise<string | null>;
 /** Bounded jj/git/gh runner with the landing command environment. */
 export const run: typeof import("./workspace-command.mjs").runWorkspaceCommand;
 /** A checked `jj --color=never` call: its trimmed stdout, or a CommandError. */
 export function jj(cwd: string, args: string[], options?: Record<string, unknown>): Promise<string>;
+export function wipDescription(task: string | null | undefined, issueNumber?: number | null): string;

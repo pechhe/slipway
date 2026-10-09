@@ -37,9 +37,9 @@ const UNFOLLOWED_FLAG = /^(?:--(?:filter|cwd|prefix|workspaces?|recursive)\b|-[F
 const INSTALL_ENVIRONMENT = /^(?:NODE_ENV|npm_config_(?:production|omit|include|only|optional|ignore_scripts|legacy_peer_deps|registry)|BUN_CONFIG_\w+)$/i;
 const MAX_REFERENCED_FILES = 256;
 
-/** Every entry of the tree at `@` (snapshotting the working copy first), by path. */
-async function treeAtWorkingCopy(workspacePath) {
-  const commit = await run("jj", ["--color=never", "log", "-r", "@", "--no-graph", "-T", "commit_id"], { cwd: workspacePath });
+/** Every entry of the tree at `@` (snapshotting the working copy first unless `snapshot` is false), by path. */
+async function treeAtWorkingCopy(workspacePath, snapshot = true) {
+  const commit = await run("jj", ["--color=never", ...(snapshot ? [] : ["--ignore-working-copy"]), "log", "-r", "@", "--no-graph", "-T", "commit_id"], { cwd: workspacePath });
   const gitRoot = await run("jj", ["--color=never", "--ignore-working-copy", "git", "root"], { cwd: workspacePath });
   const commitId = commit.stdout.trim();
   if (commit.code !== 0 || gitRoot.code !== 0 || !/^[0-9a-f]{40,64}$/.test(commitId)) return null;
@@ -151,10 +151,12 @@ async function installEnvironment(workspacePath) {
  * The workspace's install-input fingerprint (`sha256:<hex>`), or null when it
  * cannot be computed exactly (not JJ, unreadable tree or manifest, an input the
  * fingerprint cannot follow). Callers treat null as "inputs unknown" and install.
+ * `snapshot: false` reads the last snapshot without touching the checkout, for
+ * one (the primary) whose working copy a live session may own.
  */
-export async function installInputFingerprint(workspacePath) {
+export async function installInputFingerprint(workspacePath, { snapshot = true } = {}) {
   try {
-    const entries = await treeAtWorkingCopy(workspacePath);
+    const entries = await treeAtWorkingCopy(workspacePath, snapshot);
     if (!entries) return null;
     const selected = new Set();
     for (const [path, entry] of entries) {

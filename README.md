@@ -87,6 +87,24 @@ workspace whose checkout is already gone has no working directory, so it is
 forgotten without a teardown. Claiming a spare renames an unused checkout in
 place and does not run one.
 
+### Workspace options
+
+Optional `slipway.json` fields for the workspace pool and shared output:
+
+| Field | Meaning |
+| --- | --- |
+| `spares` | Integer 0-8, default 1. How many prepared spare workspaces the pool keeps; 0 disables the pool. A refill tops the pool up one spare at a time, counting spares still being prepared, and holds the pool lock only to count and register a name, never during the dependency install, so a claim always takes any ready spare even while another is installing. Every claim by `start` also starts a background refill, so a burst of starts finds the pool replenished. An idle spare costs nothing at landing. |
+| `sharedPaths` | Array of repository-relative directories (at most 20; literal paths, no globs, none inside another, none in `.jj`/`.git`). Each workspace gets a symlink at that path to the same path in the primary (integration) checkout, which is created when missing. The link is made when a workspace is started, resumed or claimed and when a spare is provisioned. An existing real directory is replaced only when empty; with content it is left alone with a warning. Cleanup ignores a link into the primary checkout, so git-ignored output such as `artifacts/` no longer keeps a landed workspace. List the path in `.gitignore`, or jj snapshots the link as source (slipway warns). |
+
+When a new workspace has no spare to claim, or a spare is provisioned, and it has
+no `node_modules`, slipway first clones the `node_modules` trees of a prepared
+spare (or of the primary checkout) whose install-input fingerprint is identical,
+with copy-on-write clones (`cp -c` on macOS, `--reflink=auto` on Linux; bun links
+with relative symlinks, which are copied verbatim, so the copy resolves inside its
+new checkout). The normal frozen install still runs afterwards as the
+verification, and if it fails on a cloned tree, the clone is discarded and the
+install repeated from scratch.
+
 ## Environment contract
 
 | Name | Set for |
@@ -125,17 +143,17 @@ imports (`start --integration --issue <n> --json`, `remove <path>`):
 | `status` | Mode, current workspace, integration checkout, landing and post-land state (JSON). |
 | `mode [isolated\|direct]` | Read or write the checkout mode. |
 | `list` | Workspaces with their state, Issue and retained material. |
-| `pool [refill]` | Show ready spare workspaces, or provision one. |
-| `prune --empty` | Remove empty workspaces. |
+| `pool [refill]` | Show ready spare workspaces, or provision one (up to `spares`). |
+| `prune --empty` | Remove empty workspaces, empty workspaces of a closed Issue, and state left by workspaces that no longer exist. |
 | `attach-issue <n>` | Bind the current workspace to Issue `n`. |
-| `start "task"` | Assign an isolated workspace for a task and print its path. A new workspace is based on the integration branch freshly fetched from the declared remote (best effort: offline, it starts from the local branch). |
-| `start [--integration] [--issue <n>] [--refill] [--json] ["task"]` | `--integration` allocates from the integration checkout even inside a workspace; `--issue` creates or resumes that Issue's workspace (the task defaults to `Issue #<n>`); `--refill` then starts a background spare refill; `--json` prints one JSON object (`workspacePath`, `workspaceName`, `integrationRoot`, `issueNumber`, `created`, `reused`, `pooled`, `refill`) and sends all install output to stderr. |
+| `start "task"` | Assign an isolated workspace for a task and print its path. An empty, undescribed change is described `wip: <task> (#<n>)` so abandoned work is never anonymous; landing replaces exactly that generated text (recorded in the workspace metadata) with the Issue title or task, never publishing it; a description you write, `wip:` or not, lands as written, and a stack with the placeholder left on a lower commit is refused. A new workspace is based on the integration branch freshly fetched from the declared remote (best effort: offline, it starts from the local branch). |
+| `start [--integration] [--issue <n>] [--refill] [--json] ["task"]` | `--integration` allocates from the integration checkout even inside a workspace; `--issue` creates or resumes that Issue's workspace (the task defaults to `Issue #<n>`); `--refill` then starts a background spare refill (a claimed spare is always refilled); `--json` prints one JSON object (`workspacePath`, `workspaceName`, `integrationRoot`, `issueNumber`, `created`, `reused`, `pooled`, `refill`) and sends all install output to stderr. |
 | `preview` | Diffstat of what a landing would integrate. |
-| `land [--local-only] [--direct]` | Verify, integrate and publish the current workspace (or, with `--direct`, the primary checkout). |
+| `land [--local-only] [--direct]` | Verify, integrate and publish the current workspace (or, with `--direct`, the primary checkout). Afterwards it removes the landed workspace itself, as `cleanup` would: this process and the session that ran it do not keep it, but any other process with its working directory inside does, and is named with its pid and command (the shell's directory is gone once it is removed, so `cd` to the primary checkout). It also sweeps other delivered workspaces, saying why it kept any. |
 | `release [--confirm <commit>] [--migrations-ready]` | Plan a promotion of the integration branch to the declared release branch, or verify and publish the confirmed candidate (see [Release](#release)). |
-| `cleanup [path]` | Remove the current (or given) workspace once it has landed. |
+| `cleanup [path]` | Remove the current (or given) workspace once it has landed. The working copy is snapshotted once and judged; just before the workspace is forgotten it is snapshotted again, and if it changed in between, the workspace is kept (`working-copy-changed`) rather than orphaning the new commit. |
 | `remove <path>` | Remove the workspace at `path` if it has landed or is untouched; otherwise keep it and exit 1. |
-| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). It denies moving or pushing the integration branch outside `land`, and a declared release branch outside `release`. Each command is judged by the repository it targets (`git -C`, `jj -R`, else the working directory). |
+| `guard` | Claude Code PreToolUse landing guard (reads the tool call on stdin). It denies moving or pushing the integration branch outside `land`, and a declared release branch outside `release`. In a Slipway workspace it also denies `jj new`, `jj edit`, `jj checkout`, `jj next`/`prev` and `jj workspace forget` (of the current or any named workspace) while the workspace left or forgotten has a non-empty, unintegrated `@` with no description (or only the generated one), telling the agent to `jj describe`, `jj abandon` or land it; that check is one jj query and allows the command if jj cannot be queried. Each command is judged by the repository it targets (`git -C`, `jj -R`, else the working directory). |
 | `cutover [--check]` | Move pre-v1.0.0 state to `~/.slipway` once and retire `peach-workspace` (see [State and cutover](#state-and-cutover)). |
 
 ## Release

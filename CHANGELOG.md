@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+- **Cleanup no longer orphans an edit:** cleanup snapshots a workspace's working
+  copy once, reads everything else with `--ignore-working-copy` (including the
+  `jj file list` that used to snapshot a second time after the work check), and
+  snapshots again just before forgetting. If the working-copy commit changed in
+  between, the workspace is kept (`working-copy-changed`). `removeWorkspace` and
+  the sweep use the same bracket (`retireWorkspace(..., { expectedCommitId })`).
+- **`start` describes first:** an empty, undescribed change is described
+  `wip: <task> (#<n>)` for new, claimed and resumed workspaces, and records that
+  exact text in the workspace metadata. Landing treats only that generated text as
+  no description (it publishes the Issue title or task instead, as it always did for
+  an undescribed change); a description a person wrote, `wip:` or not, lands as
+  written. A landing whose stack still has the generated text on a commit below the
+  target is refused, naming the commit.
+- **The guard stops orphaning work:** in a Slipway workspace, `jj new`, `jj edit`,
+  `jj checkout`, `jj next`/`prev` and `jj workspace forget` (of any named
+  workspace) are denied while the workspace being left or forgotten holds
+  unintegrated changes with no description (or only the generated one). One jj
+  query; fails open.
+- **`land` removes its own workspace:** after a successful landing the workspace is
+  cleaned up as `slipway cleanup` would. The landing process and its ancestor
+  processes do not keep it; any other process with its working directory inside
+  does, and is named by pid and command (so is a process keeping a swept one).
+  `landWorkspace` returns `released`; `releaseLandedWorkspace: false` opts out,
+  independently of `sweepOtherWorkspaces` (a host that opted out of the sweep and
+  wants the old behaviour passes both). It runs `workspaceTeardown` like every
+  other removal.
+- **The detached post-land run starts in the integration checkout:** it used to
+  inherit the landing's working directory, which kept a landed workspace "in use".
+- **`sharedPaths`:** new `slipway.json` field of directories each workspace links to
+  the same path in the primary checkout, so git-ignored non-reproducible output
+  (such as `artifacts/`) stops keeping landed workspaces.
+- **Closed Issues release their empty workspaces:** the sweep removes an empty
+  workspace attached to an Issue `gh` reports `CLOSED` at once, without the idle
+  wait (a live process or owner still keeps it); if `gh` fails, it is kept.
+- **State pruning:** the sweep and `prune --empty` delete metadata, landing sidecars
+  and owner records of workspaces that no longer exist in their repository
+  (archiving integrated delivery evidence first), and verification-slot records
+  of dead processes and idle empty `.waiting` directories. Anything in flight or
+  not provable is kept.
+- **A bigger, non-blocking spare pool:** `spares` (0-8, default 1) sets how many
+  spares are kept. Provisioning holds the pool lock only to count and register a
+  name, not during the install, so claims take any ready spare while another
+  installs; abandoned spares are adopted by the next refill. `start` refills after
+  every claim, and the detached refill tops the pool up. Provisioning and
+  non-pooled installs first clone `node_modules` (APFS clonefile) from a spare or
+  the primary checkout with identical install inputs; the frozen install still runs
+  as the verification.
+
 ## v1.14.0
 
 - **`workspaceTeardown`:** an optional `slipway.json` command (`executable` plus

@@ -200,8 +200,9 @@ try {
     if (rest[0] !== "--empty") throw new Error("Usage: slipway prune --empty");
     const result = await pruneEmptyWorkspaces();
     for (const name of result.removed) console.log(`Removed empty workspace: ${name}`);
+    for (const path of result.pruned) console.log(`Pruned state: ${path}`);
     for (const skipped of result.skipped) console.error(`Skipped ${skipped.name}: ${skipped.reason}`);
-    if (result.removed.length === 0 && result.skipped.length === 0) console.log("No empty workspaces to prune.");
+    if (result.removed.length === 0 && result.skipped.length === 0 && result.pruned.length === 0) console.log("No empty workspaces to prune.");
   } else if (command === "pool") {
     if (rest[0] === "refill") console.log(JSON.stringify(await provisionSpare(), null, 2));
     else if (rest.length === 0) {
@@ -224,7 +225,8 @@ try {
       const task = options.task || `Issue #${options.issueNumber}`;
       const result = await createWorkspace(task, root, options.issueNumber ? { issueNumber: options.issueNumber } : {});
       // Prepare the next session's spare in the background, so its start can claim it.
-      const refill = options.refill ? await startSpareRefill(root).catch((error) => ({ started: false, reason: error.message })) : undefined;
+      // A claimed spare is replaced in the background too, so a burst of starts finds the pool refilled.
+      const refill = options.refill || result.pooled ? await startSpareRefill(root).catch((error) => ({ started: false, reason: error.message })) : undefined;
       if (refill && !refill.started) console.error(`Spare refill not started: ${refill.reason}`);
       if (options.resultFd === undefined) console.log(result.workspacePath);
       else {
@@ -242,6 +244,8 @@ try {
     if (rest.some((flag) => flag !== "--local-only" && flag !== "--direct")) throw new Error("Usage: slipway land [--local-only] [--direct]");
     // --direct lands the primary checkout itself, for a session explicitly working Direct.
     const timing = { startedAt: Date.now(), stages: [] };
+    // The landing may remove this very directory, after which process.cwd() throws.
+    const landedFrom = basename(process.cwd());
     const result = await landWorkspace(process.cwd(), {
       onStage: (stage) => timing.stages.push([stage, Date.now()]),
       localOnly: rest.includes("--local-only") ? true : undefined,
@@ -255,12 +259,16 @@ try {
     for (const name of result.sweep?.removed ?? []) console.error(`Removed workspace: ${name}`);
     // An undelivered checkout kept by its session is the normal case; a delivered one is a leftover.
     for (const skipped of result.sweep?.skipped ?? []) if (skipped.landed) console.error(`Kept landed workspace ${skipped.name}: ${skipped.reason}`);
-    await appendMetric("landings", { workspace: basename(process.cwd()), ...landingTimingRecord(finished, result) });
+    await appendMetric("landings", { workspace: landedFrom, ...landingTimingRecord(finished, result) });
     console.log(JSON.stringify({ artifact: result.artifact, publication: result.publication, postIntegration: result.postIntegration,
       ...(result.primaryCheckout ? { primaryCheckout: result.primaryCheckout } : {}),
       ...(result.postLand ? { postLand: result.postLand } : {}), ...(result.postLandWarning ? { postLandWarning: result.postLandWarning } : {}),
-      ...(result.sweep ? { sweep: result.sweep } : {}) }, null, 2));
+      ...(result.sweep ? { sweep: result.sweep } : {}), ...(result.released ? { released: result.released } : {}) }, null, 2));
     if (!result.ok) process.exitCode = 1;
+    // After the result, because this directory may be gone: it was the landed workspace.
+    const own = result.context?.current.name ?? landedFrom;
+    if (result.released?.cleaned) console.error(`Removed landed workspace ${own}; this shell's directory no longer exists, so cd to the primary checkout.`);
+    else if (result.released) console.error(`Kept landed workspace ${own}: ${result.released.reason}`);
   } else if (command === "release") {
     process.exitCode = await runRelease(rest);
   } else if (command === "post-land-run") {

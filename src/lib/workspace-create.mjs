@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { prepareWorkspaceDependencies } from "./workspace-dependencies.mjs";
-import { legacyIssueWorkspaceName, parseWorkspaceList, repositoryProjectCode, revisionExists, revisionFacts, run, taskWorkspaceName, workspaceContext } from "./workspace-jj.mjs";
+import { legacyIssueWorkspaceName, parseWorkspaceList, repositoryProjectCode, revisionExists, revisionFacts, run, taskWorkspaceName, wipDescription, workspaceContext } from "./workspace-jj.mjs";
 import { startFetchHome, workspaceHome, workspaceStorageHomes } from "./workspace-paths.mjs";
 import {
   assertIssueAvailable,
@@ -17,8 +16,10 @@ import {
 } from "./workspace-state.mjs";
 import { readIntegrationPolicy, UNDECLARED_POLICY } from "./execution-policy.mjs";
 import { fetchIntegration, publicationRemote } from "./landing-steps.mjs";
-import { claimSpare, forgetWorkspace } from "./workspace-lifecycle.mjs";
-import { withWorkspaceTransaction } from "./workspace-transaction.mjs";
+import { forgetWorkspace } from "./workspace-lifecycle.mjs";
+import { claimSpare, installSeededDependencies } from "./workspace-pool.mjs";
+import { linkSharedPaths } from "./workspace-shared-paths.mjs";
+import { withWorkspaceTransaction, writeWorkspaceJson } from "./workspace-transaction.mjs";
 
 /**
  * The one implementation of assigning an isolated JJ workspace: bind the current
@@ -47,7 +48,7 @@ async function addWorkspace(hooks, integrationRoot, workspacePath, baseSha, name
 
 const prepare = (hooks, integrationRoot, workspacePath) => hooks.prepare
   ? hooks.prepare(integrationRoot, workspacePath)
-  : prepareWorkspaceDependencies(workspacePath);
+  : installSeededDependencies(integrationRoot, workspacePath);
 
 function acquired(hooks, context, issueNumber) {
   hooks.onAcquired?.({ workspaceName: context.current.name, projectRoot: context.integration.root, issueNumber: issueNumber ?? null });
@@ -282,7 +283,30 @@ export async function createWorkspace(task, cwd = process.cwd(), options = {}) {
 async function assigned(hooks, context, task, { issueNumber, attach = true, workspacePath = context.current.root, prepared, ...result }) {
   await writeWorkspaceTaskMetadata(context, task);
   if (issueNumber && attach) await attachWorkspaceIssue(context.current.root, issueNumber);
+  await describeAssignedWorkspace(context, task, issueNumber);
+  if (context.current.name !== "default") await linkSharedPaths(context.integration.root, context.current.root);
   return { hooks, context, issueNumber, prepared, workspace: { ...context, context, pooled: false, ...result, workspacePath } };
+}
+
+/**
+ * Describe-first: an empty, undescribed working-copy change gets `wip: <task> (#<n>)`,
+ * so a change someone abandons mid-task is never anonymous. Work already in the
+ * change (a resumed workspace) and any description already there are left alone;
+ * landing treats exactly that generated text (recorded in the workspace metadata) as no description.
+ */
+async function describeAssignedWorkspace(context, task, issueNumber) {
+  if (context.current.name === "default" || !task?.trim()) return;
+  try {
+    const facts = await revisionFacts(context.current.root, "@");
+    if (facts.empty && !facts.description.trim()) {
+      const generated = wipDescription(task, issueNumber);
+      await jj(context.current.root, ["describe", "-r", "@", "-m", generated]);
+      // Only this exact text is a placeholder; a description a person writes, `wip:` or not, is theirs.
+      await writeWorkspaceJson(metadataPath(context.current.name), { ...await workspaceMetadata(context.current.name), generatedDescription: generated });
+    }
+  } catch (error) {
+    console.error(`[describe] could not describe jj:${context.current.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** Make an allocated workspace's checkout ready and report its acquisition. */

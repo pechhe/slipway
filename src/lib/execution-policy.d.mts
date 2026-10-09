@@ -26,6 +26,10 @@ export type ExecutionPolicy = {
   /** Run in a workspace (cwd = its path) before it is removed; undefined when undeclared. */
   workspaceTeardown?: { executable: string; args: string[] };
   generatedPaths?: unknown;
+  /** Repository-relative directories each workspace links to the same path in the primary checkout. */
+  sharedPaths?: string[];
+  /** How many prepared spare workspaces the pool keeps; 1 when undeclared. */
+  spares?: number;
   postIntegration?: unknown;
 };
 export type IntegrationBranchProbes = {
@@ -43,6 +47,9 @@ export const UNDECLARED_POLICY: Readonly<Pick<ExecutionPolicy, "requiredLocalVer
 export function parseExecutionPolicy(raw: string, path?: string): ExecutionPolicy;
 export function readExecutionPolicy(root: string): Promise<ExecutionPolicy | null>;
 export function readExecutionPolicyAtCommit(repo: string, revision: string): Promise<{ commitId: string; policy: ExecutionPolicy | null }>;
+export function sharedPathList(declared: unknown): string[];
+export const DEFAULT_SPARES: 1;
+export function spareCount(declared: unknown): number;
 export function generatedPathMatchers(declared: unknown): RegExp[];
 export function resolveIntegrationBranch(input: { declared?: string | null } & IntegrationBranchProbes): Promise<string | null>;
 export function jjIntegrationProbes(repo: string): Required<IntegrationBranchProbes>;

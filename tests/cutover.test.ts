@@ -146,7 +146,7 @@ test("the cutover moves state, keeps an existing workspace usable through landin
     assert.deepEqual({ path: JSON.parse(resumed.stdout).workspacePath, reused: JSON.parse(resumed.stdout).reused }, { path: workspacePath, reused: true });
     await writeFile(join(workspacePath, "legacy.txt"), "landed after cutover\n");
     jj(workspacePath, ["describe", "-m", "Land from a pre-cutover workspace"]);
-    const landed = await landWorkspace(workspacePath, { onProgress: () => {}, sweepOtherWorkspaces: false });
+    const landed = await landWorkspace(workspacePath, { onProgress: () => {}, sweepOtherWorkspaces: false, releaseLandedWorkspace: false });
     assert.equal(landed.ok, true, JSON.stringify(landed.publication));
     assert.equal(f.remoteFile("legacy.txt"), "landed after cutover\n");
     assert.equal(existsSync(join(state, `${name}.json`)), true, "the landing record lives in the new state");

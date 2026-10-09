@@ -145,6 +145,42 @@ export function generatedPathMatchers(declared) {
   });
 }
 
+const MAX_SHARED_PATHS = 20;
+const MAX_SPARES = 8;
+/** How many spares the pool keeps when `spares` is undeclared. */
+export const DEFAULT_SPARES = 1;
+
+/**
+ * `sharedPaths`: repository-relative directories every workspace links to the same
+ * path in the primary checkout (for git-ignored output that must outlive a
+ * workspace, such as `artifacts/`). Specific literal paths only, none inside
+ * another, none in `.jj`/`.git`.
+ */
+export function sharedPathList(declared) {
+  if (declared === undefined) return [];
+  if (!Array.isArray(declared) || declared.length > MAX_SHARED_PATHS) fail(`sharedPaths must be an array of at most ${MAX_SHARED_PATHS} repository-relative directory paths`);
+  const paths = [...new Set(declared.map((entry) => {
+    const segments = typeof entry === "string" ? entry.replace(/\/+$/, "").split("/") : [];
+    if (!segments.length || entry.startsWith("/") || entry.includes("\\") || entry.includes("\0")
+      || segments.some((segment) => !segment || segment === "." || segment === ".." || /[*?[\]{}]/.test(segment))
+      || [".jj", ".git"].includes(segments[0])) {
+      fail(`sharedPaths entry ${JSON.stringify(entry)} must be a literal repository-relative directory without '.', '..', globs or empty segments, outside .jj and .git`);
+    }
+    return segments.join("/");
+  }))];
+  for (const path of paths) {
+    if (paths.some((other) => other !== path && path.startsWith(`${other}/`))) fail(`sharedPaths entry ${JSON.stringify(path)} is inside another entry`);
+  }
+  return paths;
+}
+
+/** `spares`: how many prepared spare workspaces the pool keeps (default `DEFAULT_SPARES`, at most 8; 0 disables the pool). */
+export function spareCount(declared) {
+  if (declared === undefined) return DEFAULT_SPARES;
+  if (!Number.isInteger(declared) || declared < 0 || declared > MAX_SPARES) fail(`spares must be an integer from 0 to ${MAX_SPARES}`);
+  return declared;
+}
+
 /**
  * `slipway release`'s declaration: the branch the integration branch is promoted to
  * and the checks the exact candidate commit must pass first. A release branch with
@@ -187,6 +223,8 @@ function parsePolicyText(raw) {
     fail("declares a projectCode that is not 2-8 lowercase letters or digits");
   postIntegrationPolicy(parsed.postIntegration);
   generatedPathMatchers(parsed.generatedPaths);
+  const sharedPaths = sharedPathList(parsed.sharedPaths);
+  const spares = spareCount(parsed.spares);
   return {
     ...parsed,
     version: 1,
@@ -198,6 +236,8 @@ function parsePolicyText(raw) {
     postLandVerification: postLandChecks(parsed.postLandVerification ?? []),
     migrationFinalization: migrationFinalization(parsed.migrationFinalization),
     workspaceTeardown: workspaceTeardown(parsed.workspaceTeardown),
+    ...(parsed.sharedPaths === undefined ? {} : { sharedPaths }),
+    ...(parsed.spares === undefined ? {} : { spares }),
   };
 }
 

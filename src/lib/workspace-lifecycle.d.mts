@@ -1,19 +1,3 @@
-import type { WorkspaceEntry } from "./workspace-jj.mjs";
-export function readySpares(cwd: string): Promise<WorkspaceEntry[]>;
-export function provisionSpare(cwd?: string): Promise<{ provisioned: boolean; reason?: string; workspacePath?: string }>;
-/** A claimed spare's provisioned dependencies, reused because its install inputs are unchanged. */
-export interface ReusedDependencies {
-  state: "ready" | "not_required";
-  packageManager: string | null;
-  installInputs: string;
-  reused: true;
-}
-export function claimSpare(cwd: string, name: string): Promise<{ root: string; name: string; dependencies: ReusedDependencies | null } | null>;
-/** Start a detached, `nice`d `provisionSpare` for the repository of `cwd`; resolves once the child has spawned. */
-export function startSpareRefill(
-  cwd?: string,
-  options?: { command?: string[] },
-): Promise<{ started: boolean; pid?: number; logPath?: string; reason?: string }>;
 export function uniqueUntrackedMaterial(root: string, limit?: number, generated?: RegExp[], primaryRoot?: string | null): Promise<string[]>;
 export function retainedWorkspaceMaterial(root: string, integrationRoot: string, limit?: number): Promise<string[]>;
 export function describeRetention(result: { reason?: string; paths?: string[] } | null | undefined): string;
@@ -22,13 +6,19 @@ export interface RetirementHooks {
   forget?: (integrationRoot: string, workspaceName: string, workspacePath: string) => Promise<void>;
   onReleased?: (release: { workspaceName: string; projectRoot: string; issueNumber: number | null }) => void;
   environment?: () => NodeJS.ProcessEnv;
+  /** Overrides the `workspaceTeardown` timeout (tests). */
+  teardownTimeoutMs?: number;
+  /** Called after cleanup's delivery checks and just before it retires the checkout (tests, hosts). */
+  afterChecks?: () => void | Promise<void>;
 }
+/** Thrown by `retireWorkspace` when the working copy no longer matches `expectedCommitId`. */
+export class WorkingCopyChangedError extends Error { code: "WORKING_COPY_CHANGED" }
 export function cleanupLandedWorkspace(cwd?: string, hooks?: RetirementHooks): Promise<{ cleaned: boolean; reason?: string; paths?: string[];
   /** A failed post-integration record a later published landing superseded. */
   supersededPostIntegration?: { status: string; attempt: number; reason?: string } }>;
 export function withinWorkspaceStorage(root: string): Promise<boolean>;
 export function forgetWorkspace(integrationRoot: string, workspaceName: string, workspacePath: string, hooks?: Pick<RetirementHooks, "forget">): Promise<void>;
-export function retireWorkspace(integrationRoot: string, workspace: { name: string; root: string }, hooks?: RetirementHooks): Promise<void>;
+export function retireWorkspace(integrationRoot: string, workspace: { name: string; root: string }, hooks?: RetirementHooks, options?: { expectedCommitId?: string }): Promise<void>;
 export function removeWorkspace(
   cwd: string,
   workspaceName: string,

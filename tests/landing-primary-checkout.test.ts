@@ -24,7 +24,7 @@ const primary = (f: Fixture) => ({
 async function land(f: Fixture, file: string) {
   const workspace = await createWorkspace(file, f.repo);
   await writeFile(join(workspace.workspacePath, file), `${file}\n`);
-  const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, sweepOtherWorkspaces: false });
+  const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, sweepOtherWorkspaces: false, releaseLandedWorkspace: false });
   assert.equal(result.ok, true, JSON.stringify(result.publication));
   assert.equal(result.publication.status, "pushed");
   assert.equal(f.remoteFile(file), `${file}\n`);

@@ -58,7 +58,7 @@ async function fixture() {
       await writeFile(path.join(workspace, "value.txt"), value);
       if (description) jj(workspace, ["describe", "-m", description]);
       const base = jj(repo, ["log", "-r", "main", "--no-graph", "-T", "commit_id"]);
-      return { base, landed: await landWorkspace(workspace, { onProgress: () => {} }) };
+      return { base, landed: await landWorkspace(workspace, { onProgress: () => {}, releaseLandedWorkspace: false }) };
     },
   };
 }

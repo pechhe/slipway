@@ -6,8 +6,10 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   operationId?: string;
   onStage?: (stage: "preparing" | "rebasing" | "verifying" | "integrating" | "cleaning") => void;
   adapter?: LandingAdapter;
-  /** `false` for a host that releases its own checkout records; others' disposable workspaces are otherwise swept after landing. */
+  /** `false` for a host that releases its own checkout records; otherwise other disposable workspaces are swept after landing. */
   sweepOtherWorkspaces?: boolean;
+  /** `false` to keep the landed workspace itself; otherwise it is removed after landing unless another process holds it. Independent of `sweepOtherWorkspaces`. */
+  releaseLandedWorkspace?: boolean;
   /** Receives one concise line per verification step; defaults to stdout. */
   onProgress?: (line: string) => void;
   /** Environment for the background post-land verification; defaults to `environment`. */
@@ -28,6 +30,8 @@ export function landWorkspace(cwd?: string, options?: LandingTailOptions & {
   postLandWarning?: string;
   /** What this landing's sweep of other disposable workspaces removed and kept. */
   sweep?: import("./workspace-sweep.mjs").SweepResult;
+  /** Whether this landing removed its own, now delivered, workspace; when kept, why (naming any other process holding it). */
+  released?: { cleaned: boolean; reason?: string; holders?: import("./workspace-holders.mjs").ProcessWorkingDirectory[] };
 }>;
 export function assertWorkspaceDelivered(cwd: string): Promise<Record<string, unknown>>;
 export function prepareWorkspaceContinuation(task: string, cwd: string): ReturnType<typeof createWorkspace>;

@@ -26,7 +26,7 @@ function runCli(cwd: string, args: string[]) {
 async function landed(f: Awaited<ReturnType<typeof project>>, file: string) {
   const workspace = await createWorkspace(file, f.repo);
   await writeFile(join(workspace.workspacePath, file), `${file}\n`);
-  const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+  const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false });
   assert.equal(result.ok, true, JSON.stringify(result.publication));
   return workspace;
 }
@@ -88,7 +88,7 @@ test("a prepared landing whose bookmark already moved is finished, not verified 
     await rm(statePath(workspace.current.name));
     const before = await verifiedLines(f.verified);
 
-    const rerun = await landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    const rerun = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false });
     assert.equal(rerun.ok, true, JSON.stringify(rerun.publication));
     assert.equal(rerun.artifact.commitId, state.artifactCommitId);
     assert.equal(await verifiedLines(f.verified), before, "landed source is not verified again");
@@ -120,7 +120,7 @@ test("a landing and a cleanup of the same workspace serialize on one key", async
   try {
     const workspace = await createWorkspace("serialized", f.repo);
     await writeFile(join(workspace.workspacePath, "serialized.txt"), "serialized\n");
-    const landing = landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    const landing = landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false });
     await waitFor(() => existsSync(`${gate}.started`));
     const cleanup = cleanupLandedWorkspace(workspace.workspacePath);
     await writeFile(gate, "");
@@ -140,7 +140,7 @@ test("cleanup refuses a checkout outside workspace storage", async () => {
     jj(f.repo, ["workspace", "add", "--name", "outside", outside]);
     await writeFile(join(outside, "outside.txt"), "outside\n");
     jj(outside, ["describe", "-m", "Add outside"]);
-    assert.equal((await landWorkspace(outside, { onProgress: () => {} })).ok, true);
+    assert.equal((await landWorkspace(outside, { onProgress: () => {}, releaseLandedWorkspace: false })).ok, true);
     assert.equal(await withinWorkspaceStorage(outside), false);
     assert.deepEqual(await cleanupLandedWorkspace(outside), { cleaned: false, reason: "outside-workspace-storage" });
     assert.ok(existsSync(join(outside, "outside.txt")));
@@ -160,7 +160,7 @@ test("a hung jj fetch times out instead of holding the landing", async () => {
   try {
     const workspace = await createWorkspace("hung remote", f.repo);
     await writeFile(join(workspace.workspacePath, "hung.txt"), "hung\n");
-    const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {} });
+    const result = await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false });
     assert.equal(result.ok, false);
     assert.equal(result.publication.status, "push_failed");
     assert.match(result.publication.reason ?? "", /timed out after/);
@@ -211,7 +211,7 @@ test("an Issue workspace is resumed, and refused once it has landed", async () =
     assert.deepEqual([resumed.reused, resumed.workspacePath], [true, workspace.workspacePath]);
     assert.equal((await workspaceMetadata(workspace.current.name))?.task, "Issue work again");
     await writeFile(join(workspace.workspacePath, "issue.txt"), "issue\n");
-    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {} })).ok, true);
+    assert.equal((await landWorkspace(workspace.workspacePath, { onProgress: () => {}, releaseLandedWorkspace: false })).ok, true);
     await assert.rejects(createWorkspace("after landing", f.repo, { issueNumber: 96501 }), /has landed, so it is read-only/);
   } finally {
     await dispose();

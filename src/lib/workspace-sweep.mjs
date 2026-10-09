@@ -1,9 +1,9 @@
-import { readdir, readFile, readlink, stat } from "node:fs/promises";
-import { platform } from "node:os";
-import { join, resolve, sep } from "node:path";
-import { run, workspaceContext } from "./workspace-jj.mjs";
+import { readFile, stat } from "node:fs/promises";
+import { issueState, workspaceContext } from "./workspace-jj.mjs";
 import { inspectWorkspaces, lockPath } from "./workspace-state.mjs";
 import { cleanupLandedWorkspace, describeRetention, removeWorkspace, retainedWorkspaceMaterial } from "./workspace-lifecycle.mjs";
+import { describeHolders, processAlive, processWorkingDirectories, within, workspaceHolders } from "./workspace-holders.mjs";
+import { pruneWorkspaceState } from "./workspace-state-prune.mjs";
 
 /**
  * Disposable-workspace housekeeping shared by every surface that lands or
@@ -12,37 +12,11 @@ import { cleanupLandedWorkspace, describeRetention, removeWorkspace, retainedWor
  * since it was assigned. Neither is touched while a live process works in it, and
  * unique untracked material always keeps a workspace. Unfinished work is never
  * swept: only `hasWork === false` checkouts qualify. An Issue's checkout is
- * swept once it has landed, never while it is only assigned.
+ * swept once it has landed, or while empty once `gh` reports its Issue CLOSED
+ * (never while the Issue is open or its state is unknown). The sweep also prunes
+ * machine-local state left by workspaces that no longer exist.
  */
 export const EMPTY_IDLE_MS = 24 * 60 * 60 * 1000;
-
-function processAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
-}
-
-function within(path, root) {
-  const target = resolve(path);
-  const base = resolve(root);
-  return target === base || target.startsWith(base + sep);
-}
-
-/** Working directories of every process on this host, or null when they cannot be read. */
-async function processWorkingDirectories() {
-  if (platform() === "linux") {
-    const cwds = [];
-    for (const entry of await readdir("/proc").catch(() => [])) {
-      if (!/^\d+$/.test(entry)) continue;
-      const cwd = await readlink(join("/proc", entry, "cwd")).catch(() => null);
-      if (cwd) cwds.push(cwd);
-    }
-    return cwds;
-  }
-  const result = await run("lsof", ["-n", "-P", "-w", "-d", "cwd", "-F", "n"]).catch(() => null);
-  // lsof exits 1 when some processes could not be inspected; the rest is still valid.
-  if (!result || !result.stdout || result.truncated) return null;
-  return result.stdout.split("\n").filter((line) => line.startsWith("n/")).map((line) => line.slice(1));
-}
 
 async function lockOwnerAlive(workspaceName) {
   try {
@@ -71,45 +45,64 @@ async function assignedAt(workspace) {
  * directories cannot be read, nothing is removed.
  */
 export async function sweepDisposableWorkspaces(cwd = process.cwd(), options = {}) {
-  const { emptyIdleMs = EMPTY_IDLE_MS, protectedRoots = [], now = Date.now() } = options;
+  const { emptyIdleMs = EMPTY_IDLE_MS, protectedRoots = [], now = Date.now(), issueState: readIssueState = issueState } = options;
   const removed = [];
   const skipped = [];
   const context = await workspaceContext(cwd);
-  if (!context) return { removed, skipped };
-  const candidates = (await inspectWorkspaces(cwd)).filter((workspace) =>
-    workspace.name !== "default" && workspace.root && !workspace.hasWork
-    && !workspace.metadata?.spare && (workspace.landed || !workspace.metadata?.issueNumber));
-  if (!candidates.length) return { removed, skipped };
-  const cwds = await processWorkingDirectories();
-  if (!cwds) return { removed, skipped: candidates.map(({ name, landed }) => ({ name, landed, reason: "process working directories unavailable" })) };
+  if (!context) return { removed, skipped, pruned: [] };
+  const result = await sweepCandidates(context, { emptyIdleMs, protectedRoots, now, readIssueState, removed, skipped });
+  return { ...result, pruned: options.pruneState === false ? [] : await pruneWorkspaceState() };
+}
+
+async function sweepCandidates(context, { emptyIdleMs, protectedRoots, now, readIssueState, removed, skipped }) {
+  const result = { removed, skipped };
+  const candidates = (await inspectWorkspaces(context.integration.root)).filter((workspace) =>
+    workspace.name !== "default" && workspace.root && !workspace.hasWork && !workspace.metadata?.spare);
+  if (!candidates.length) return result;
+  const processes = await processWorkingDirectories();
+  if (!processes) {
+    skipped.push(...candidates.filter((workspace) => workspace.landed || !workspace.metadata?.issueNumber)
+      .map(({ name, landed }) => ({ name, landed, reason: "process working directories unavailable" })));
+    return result;
+  }
   const guarded = [...protectedRoots, process.cwd()];
+  const issueStates = new Map();
+  const closed = async (issueNumber) => {
+    if (!issueStates.has(issueNumber)) issueStates.set(issueNumber, await Promise.resolve(readIssueState(context.integration.root, issueNumber)).catch(() => null));
+    return issueStates.get(issueNumber) === "CLOSED";
+  };
   for (const workspace of candidates) {
     const skip = (reason) => skipped.push({ name: workspace.name, landed: workspace.landed, reason });
+    // An Issue's checkout that has not landed qualifies only when its Issue is closed (it is empty, and
+    // a closed Issue needs no idle wait); a live process or owner still protects it below.
+    const issueBound = !workspace.landed && Boolean(workspace.metadata?.issueNumber);
     if (guarded.some((root) => within(root, workspace.root))) continue;
-    if (cwds.some((path) => within(path, workspace.root)) || await lockOwnerAlive(workspace.name)) {
-      skip("in use by a live process");
+    if (issueBound && !await closed(workspace.metadata.issueNumber)) continue;
+    const holders = await workspaceHolders(workspace.root, { processes });
+    if (holders.length || await lockOwnerAlive(workspace.name)) {
+      skip(holders.length ? `in use by a live process: ${describeHolders(holders)}` : "in use by a live process");
       continue;
     }
     try {
       if (workspace.landed) {
-        const result = await cleanupLandedWorkspace(workspace.root);
-        if (result.cleaned) removed.push(workspace.name);
-        else skip(describeRetention(result));
+        const cleaned = await cleanupLandedWorkspace(workspace.root);
+        if (cleaned.cleaned) removed.push(workspace.name);
+        else skip(describeRetention(cleaned));
         continue;
       }
-      if (emptyIdleMs > 0 && now - await assignedAt(workspace) < emptyIdleMs) continue;
+      if (!issueBound && emptyIdleMs > 0 && now - await assignedAt(workspace) < emptyIdleMs) continue;
       const unique = await retainedWorkspaceMaterial(workspace.root, context.integration.root);
       if (unique.length) {
         skip(`holds unique files: ${unique.join(", ")}`);
         continue;
       }
-      await removeWorkspace(context.integration.root, workspace.name);
+      await removeWorkspace(context.integration.root, workspace.name, issueBound ? { allowIssue: true } : {});
       removed.push(workspace.name);
     } catch (error) {
       skip(error instanceof Error ? error.message : String(error));
     }
   }
-  return { removed, skipped };
+  return result;
 }
 
 /** Explicit `prune --empty`: every unused empty or delivered workspace now, with the same safety checks. */

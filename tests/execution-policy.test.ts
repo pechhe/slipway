@@ -298,3 +298,16 @@ test("at-commit reads (jj, integration and exact git object) refuse a commit who
     await f.dispose();
   }
 }, 60_000);
+
+test("sharedPaths and spares are validated strictly and kept only when declared", () => {
+  const policy = (extra: Record<string, unknown>) => parseExecutionPolicy(JSON.stringify({ version: 1, ...extra }));
+  assert.deepEqual(policy({ sharedPaths: ["artifacts", "out/reports/", "artifacts"], spares: 3 }).sharedPaths, ["artifacts", "out/reports"]);
+  assert.equal(policy({ sharedPaths: ["artifacts"], spares: 3 }).spares, 3);
+  assert.equal(policy({}).sharedPaths, undefined);
+  assert.equal(policy({}).spares, undefined, "an undeclared pool size is the caller's default of one");
+  assert.equal(policy({ spares: 0 }).spares, 0);
+  for (const sharedPaths of ["artifacts", [""], ["/abs"], ["../up"], ["a/../b"], ["./a"], ["a//b"], ["*"], ["a/**"], [".jj"], [".git/x"], [7], ["a", "a/b"], Array.from({ length: 21 }, (_, i) => `p${i}`)]) {
+    assert.throws(() => policy({ sharedPaths }), /sharedPaths/, JSON.stringify(sharedPaths));
+  }
+  for (const spares of [-1, 9, 1.5, "2", null]) assert.throws(() => policy({ spares }), /spares must be an integer from 0 to 8/, JSON.stringify(spares));
+});

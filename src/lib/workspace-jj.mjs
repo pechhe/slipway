@@ -222,8 +222,14 @@ export async function projectPrefix(cwd = process.cwd()) {
   return repositoryProjectCode(context.integration.root);
 }
 
-export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch) {
+/**
+ * Whether the workspace holds non-empty commits the integration branch lacks.
+ * Snapshots the working copy first unless `ignoreWorkingCopy`, for a caller that
+ * has snapshotted once and must judge that one state (see `workingCopyCommit`).
+ */
+export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBranch, { ignoreWorkingCopy = false } = {}) {
   const output = await jj(workspaceRoot, [
+    ...(ignoreWorkingCopy ? ["--ignore-working-copy"] : []),
     "log",
     "-r",
     `(${integrationBranch}..@) & ~empty()`,
@@ -232,4 +238,23 @@ export async function workspaceHasUnintegratedWork(workspaceRoot, integrationBra
     'commit_id.short() ++ "\\n"',
   ]);
   return Boolean(output.trim());
+}
+
+/** The workspace's working-copy commit id, snapshotting the on-disk tree first. */
+export async function workingCopyCommit(workspaceRoot) {
+  return jj(workspaceRoot, ["log", "-r", "@", "--no-graph", "-T", "commit_id"]);
+}
+
+/** Issue state (`OPEN`/`CLOSED`) as `gh` reports it, or null when it cannot be read. */
+export async function issueState(repositoryRoot, issueNumber) {
+  const result = await run("gh", ["issue", "view", String(issueNumber), "--json", "state", "-q", ".state"],
+    { cwd: repositoryRoot, timeoutMs: 20_000 });
+  return result.code === 0 ? result.stdout.trim() || null : null;
+}
+
+/** The working-copy description `start` gives a new workspace: `wip: <task> (#<issue>)`. */
+export function wipDescription(task, issueNumber) {
+  const line = String(task ?? "").split("\n")[0].replace(/\s+/g, " ").trim().slice(0, 100);
+  const issue = issueNumber && !line.includes(`#${issueNumber}`) ? ` (#${issueNumber})` : "";
+  return `wip: ${line || "task"}${issue}`;
 }
