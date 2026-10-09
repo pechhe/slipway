@@ -51,18 +51,26 @@ export async function processWorkingDirectories() {
   return found;
 }
 
-/** This process and its ancestors: the session that ran the command is the caller, not a bystander. */
+/**
+ * This process, its ancestors and its process group: the session that ran the
+ * command is the caller, not a bystander, and so is the rest of its shell job
+ * (`slipway land | tail` puts `tail` beside slipway in its group, not above it).
+ */
 export async function callerPids(pid = process.pid) {
   const pids = new Set([pid]);
-  const listed = await run("ps", ["-A", "-o", "pid=,ppid="], { timeoutMs: 10_000 }).catch(() => null);
+  const listed = await run("ps", ["-A", "-o", "pid=,ppid=,pgid="], { timeoutMs: 10_000 }).catch(() => null);
   if (!listed || listed.code !== 0) return pids;
   const parentOf = new Map();
+  const groupOf = new Map();
   for (const line of listed.stdout.split("\n")) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    const [child, parent, group] = line.trim().split(/\s+/).map(Number);
     if (!Number.isInteger(child) || !Number.isInteger(parent)) continue;
     parentOf.set(child, parent);
+    if (Number.isInteger(group)) groupOf.set(child, group);
   }
   for (let up = parentOf.get(pid); up > 1 && !pids.has(up); up = parentOf.get(up)) pids.add(up);
+  const group = groupOf.get(pid);
+  if (group > 1) for (const [member, memberGroup] of groupOf) if (memberGroup === group) pids.add(member);
   return pids;
 }
 

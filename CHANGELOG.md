@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.15.1
+
+- **Landing releases its own workspace when its output is piped:** the
+  caller's shell job (for example `slipway land | tail`, or a subshell the shell
+  forks for it) shares slipway's process group without being its ancestor, so
+  v1.15.0 named those processes as holders and kept the workspace. Processes in
+  slipway's own process group now count as the caller.
+
 ## v1.15.0
 
 - **Cleanup no longer orphans an edit:** cleanup snapshots a workspace's working
